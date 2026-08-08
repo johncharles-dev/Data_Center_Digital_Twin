@@ -1,0 +1,553 @@
+#!/usr/bin/env python3
+"""
+Smart Data Center Digital Twin - Segment 2: Synthetic Telemetry Engine
+=======================================================================
+
+Publishes live simulated sensor telemetry for a virtual data center server
+room (3 racks) to an MQTT broker, matching the Segment 1 JSON schema exactly
+so the Segment 3 dashboard can consume it with no changes.
+
+Contract (from Segment 1 handover + dashboard.html):
+  - Broker topic:   datacenter/racks/<RACK_ID>   (dashboard subscribes datacenter/racks/#)
+  - Payload schema: timestamp, rack_id, location, inlet_temperature,
+                    exhaust_temperature, fan_speed, power_draw, status
+  - status values:  NORMAL | WARNING | CRITICAL
+  - Status rules:   WARNING  if exhaust > 35 OR power > 8.5
+                    CRITICAL if exhaust > 40 OR fan > 7000 OR power > 9.0
+
+CRAC-01 stream (added for Project 2 / section 5 failure model training):
+  - Broker topic:   datacenter/racks/CRAC-01   (same topic family, dashboard's
+                    datacenter/racks/# subscription already picks it up;
+                    the CoolingTwin subscribes to this exact topic)
+  - Payload schema: timestamp, unit_id, fan_rpm, fan_motor_current_a,
+                    fan_motor_temp_c, fan_vibration_mm_s, filter_dp_pa,
+                    airflow_cfm, supply_air_temp_c, return_air_temp_c,
+                    compressor_load_pct
+  - Failure thresholds (plan section 4.3):
+      fan_motor_temp_c >= 105        -> bearing wear / overheating
+      filter_dp_pa     >= 350        -> filter clogging / restriction
+      airflow_cfm      <= 2210 (65%) -> airflow loss (nominal 3400 cfm)
+
+Anomaly:
+  Press 'a' + Enter (or run with --anomaly) to trigger a CRAC cooling
+  degradation. This is now the SAME root-cause event for both streams:
+  CRAC-01's motor temp, filter DP, and vibration climb (the cause) while
+  rack inlet temperature ramps upward across all racks (the effect) fast
+  enough that the dashboard's predictive alert (slope >= 0.2 C/min toward
+  the 30 C inlet-critical line) fires BEFORE the hard thresholds trip.
+  CRAC-01's own thresholds trip a little ahead of the rack thresholds,
+  matching the plan's claim that CRAC sensor data gives more lead time
+  than reacting to rack symptoms alone.
+
+Usage:
+  pip install paho-mqtt
+  python sensor_simulator.py                 # normal live stream
+  python sensor_simulator.py --anomaly       # start, then auto-trigger anomaly after 20s
+  python sensor_simulator.py --csv           # also append every reading to room_data.csv/.json
+  python sensor_simulator.py --host broker.hivemq.com   # use public broker fallback
+"""
+
+import argparse
+import csv
+import json
+import math
+import os
+import random
+import sys
+import threading
+import time
+from datetime import datetime, timezone
+
+try:
+    import paho.mqtt.client as mqtt
+    HAVE_MQTT = True
+except ImportError:
+    HAVE_MQTT = False
+
+
+# ---------------------------------------------------------------------------
+# Configuration - values come straight from the Segment 1 handover
+# ---------------------------------------------------------------------------
+
+RACKS = [
+    {"rack_id": "SR-RACK-01", "location": "Rack A"},
+    {"rack_id": "SR-RACK-02", "location": "Rack B"},
+    {"rack_id": "SR-RACK-03", "location": "Rack C"},
+]
+
+# Normal operating baselines (midpoints of the Segment 1 normal ranges)
+BASE = {
+    "inlet_temperature":   20.0,   # normal 18-27
+    "exhaust_temperature": 30.0,   # normal 25-35
+    "fan_speed":           4200,   # normal 2500-6000
+    "power_draw":          5.8,    # normal 4.2-8.5
+}
+
+# Thresholds for status computation (Segment 1 status rules)
+WARN_EXHAUST = 35.0
+WARN_POWER   = 8.5
+CRIT_EXHAUST = 40.0
+CRIT_FAN     = 7000
+CRIT_POWER   = 9.0
+
+PUBLISH_INTERVAL = 1.0            # seconds between publish cycles
+TOPIC_BASE = "datacenter/racks"  # dashboard subscribes to datacenter/racks/#
+
+# ---------------------------------------------------------------------------
+# CRAC-01 configuration (plan section 4.3 thresholds)
+# ---------------------------------------------------------------------------
+
+CRAC_UNIT_ID = "CRAC-01"
+
+CRAC_BASE = {
+    "fan_rpm":              3200,
+    "fan_motor_current_a":  4.5,
+    "fan_motor_temp_c":     65.0,   # trips at 105
+    "fan_vibration_mm_s":   1.8,
+    "filter_dp_pa":         120.0,  # trips at 350
+    "airflow_cfm":          3400.0, # trips at <=2210 (65% of nominal)
+    "supply_air_temp_c":    18.0,
+    "return_air_temp_c":    27.0,
+    "compressor_load_pct":  55.0,
+}
+
+CRAC_MOTOR_TEMP_TRIP = 105.0
+CRAC_FILTER_DP_TRIP = 350.0
+CRAC_NOMINAL_AIRFLOW = 3400.0
+CRAC_AIRFLOW_TRIP_PCT = 0.65
+
+# Anomaly plateau caps for CRAC-01, timed to reach threshold territory
+# comfortably before the rack plateau (ANOMALY_MAX_RISE=6.5C) finishes,
+# so CRAC sensors give earlier lead time than rack symptoms alone.
+CRAC_ANOMALY_MOTOR_TEMP_RISE = 55.0   # 65 -> 120, crosses 105 trip
+CRAC_ANOMALY_FILTER_DP_RISE = 280.0   # 120 -> 400, crosses 350 trip
+CRAC_ANOMALY_AIRFLOW_DROP = 1500.0    # 3400 -> 1900 (<=2210 trip)
+CRAC_ANOMALY_VIBRATION_RISE = 3.5     # 1.8 -> 5.3 mm/s
+CRAC_ANOMALY_COMPRESSOR_RISE = 30.0   # compressor works harder to compensate
+CRAC_ANOMALY_RAMP_FRACTION = 0.32     # reaches full plateau at 32% of the
+                                       # rack anomaly's own ramp timescale --
+                                       # tuned so CRAC thresholds trip ~10-15s
+                                       # BEFORE rack WARNING does (verified
+                                       # below), matching the plan's claim
+                                       # that CRAC sensor data gives earlier
+                                       # lead time than reacting to rack
+                                       # symptoms alone
+
+# Anomaly tuning. The dashboard fires its predictive alert when inlet temp
+# rises with slope >= 0.2 C/min toward INLET_CRITICAL = 30 C. We ramp inlet
+# by ~0.06 C per second = ~3.6 C/min, comfortably above the trigger, so the
+# warning appears well before inlet actually reaches 30 C.
+ANOMALY_INLET_RAMP_PER_SEC = 0.06
+ANOMALY_EXHAUST_COUPLING   = 1.3   # exhaust rises faster than inlet
+ANOMALY_FAN_COMPENSATION   = 90    # RPM added per degree of inlet rise
+ANOMALY_POWER_CREEP        = 0.02  # kW per second
+
+# Plateau caps: residual / backup cooling stabilises the room at an elevated but
+# physically-believable ceiling instead of the ramp running away unbounded.
+# MAX_RISE = 6.5 -> inlet caps ~26.5 C, exhaust caps ~45 C (30 + 2.3*6.5), fan
+# caps ~4785 RPM. The climb still passes cleanly through NORMAL -> WARNING
+# (exhaust>35) -> CRITICAL (exhaust>40) before settling at the plateau.
+ANOMALY_MAX_RISE       = 6.5   # deg C of inlet rise the fault tops out at
+ANOMALY_MAX_POWER_RISE = 2.2   # kW of extra draw the fault tops out at (-> ~8.0 kW)
+
+
+# ---------------------------------------------------------------------------
+# Simulation state
+# ---------------------------------------------------------------------------
+
+class Simulator:
+    def __init__(self, args):
+        self.args = args
+        self.t = 0.0
+        self.anomaly_active = False
+        self.anomaly_elapsed = 0.0
+        self.running = True
+        self.client = None
+        self.csv_file = None
+        self.csv_writer = None
+        self.crac_csv_file = None
+        self.crac_csv_writer = None
+
+        if args.csv:
+            self._open_csv()
+            self._open_crac_csv()
+
+    def _open_csv(self):
+        new = not os.path.exists("room_data.csv")
+        self.csv_file = open("room_data.csv", "a", newline="")
+        self.csv_writer = csv.DictWriter(self.csv_file, fieldnames=[
+            "timestamp", "rack_id", "location", "inlet_temperature",
+            "exhaust_temperature", "fan_speed", "power_draw", "status"])
+        if new:
+            self.csv_writer.writeheader()
+
+    def _open_crac_csv(self):
+        """Separate file — CRAC-01's schema doesn't match the rack schema,
+        so it can't share room_data.csv's fixed fieldnames."""
+        new = not os.path.exists("crac_data.csv")
+        self.crac_csv_file = open("crac_data.csv", "a", newline="")
+        self.crac_csv_writer = csv.DictWriter(self.crac_csv_file, fieldnames=[
+            "timestamp", "unit_id", "fan_rpm", "fan_motor_current_a",
+            "fan_motor_temp_c", "fan_vibration_mm_s", "filter_dp_pa",
+            "airflow_cfm", "supply_air_temp_c", "return_air_temp_c",
+            "compressor_load_pct", "threshold_flags"])
+        if new:
+            self.crac_csv_writer.writeheader()
+
+    # -- value generation ----------------------------------------------------
+
+    def _reading_for_rack(self, rack, phase):
+        """Produce one physically-plausible reading for a rack."""
+        # Gentle sine swing so the baseline isn't flat, plus small noise.
+        swing = math.sin(self.t / 20.0 + phase)
+
+        # Occasional independent compute spike raises power (and heat/fan).
+        # Suppressed during the anomaly so the demo climb stays clean/monotonic.
+        spike = 0.0
+        if not self.anomaly_active and random.random() < 0.03:
+            spike = random.uniform(1.5, 2.6)
+
+        inlet = BASE["inlet_temperature"] + 0.8 * swing + random.uniform(-0.2, 0.2)
+        power = BASE["power_draw"] + 0.6 * swing + spike + random.uniform(-0.15, 0.15)
+
+        # Exhaust tracks inlet plus the heat added by the rack's power load.
+        exhaust = BASE["exhaust_temperature"] + (inlet - BASE["inlet_temperature"]) \
+                  + 1.4 * (power - BASE["power_draw"]) + random.uniform(-0.3, 0.3)
+
+        # Fan speed responds to exhaust temperature.
+        fan = BASE["fan_speed"] + 140 * (exhaust - BASE["exhaust_temperature"]) \
+              + random.uniform(-80, 80)
+
+        # -- anomaly overlay: CRAC degradation ------------------------------
+        if self.anomaly_active:
+            # Clamp the rise so temps stabilise at a believable plateau instead
+            # of climbing forever (backup cooling holding the line).
+            rise = min(ANOMALY_INLET_RAMP_PER_SEC * self.anomaly_elapsed,
+                       ANOMALY_MAX_RISE)
+            power_rise = min(ANOMALY_POWER_CREEP * self.anomaly_elapsed,
+                             ANOMALY_MAX_POWER_RISE)
+            # During the anomaly, damp the random swing/noise so the upward
+            # ramp is smooth and status climbs NORMAL -> WARNING -> CRITICAL
+            # cleanly rather than flickering on noise.
+            inlet   = BASE["inlet_temperature"] + rise + random.uniform(-0.05, 0.05)
+            exhaust = BASE["exhaust_temperature"] + rise + ANOMALY_EXHAUST_COUPLING * rise \
+                      + random.uniform(-0.1, 0.1)
+            fan     = BASE["fan_speed"] + ANOMALY_FAN_COMPENSATION * rise + random.uniform(-30, 30)
+            power   = BASE["power_draw"] + power_rise + random.uniform(-0.05, 0.05)
+
+        return {
+            "inlet_temperature":   round(inlet, 1),
+            "exhaust_temperature": round(exhaust, 1),
+            "fan_speed":           int(max(0, fan)),
+            "power_draw":          round(max(0, power), 1),
+        }
+
+    @staticmethod
+    def _status(r):
+        """Apply the Segment 1 status rules."""
+        if (r["exhaust_temperature"] > CRIT_EXHAUST
+                or r["fan_speed"] > CRIT_FAN
+                or r["power_draw"] > CRIT_POWER):
+            return "CRITICAL"
+        if (r["exhaust_temperature"] > WARN_EXHAUST
+                or r["power_draw"] > WARN_POWER):
+            return "WARNING"
+        return "NORMAL"
+
+    # -- CRAC-01 value generation --------------------------------------------
+
+    def _crac_reading(self):
+        """Produce one physically-plausible CRAC-01 reading. Shares the same
+        anomaly_active / anomaly_elapsed state as the rack ramp, so the two
+        streams tell one consistent degradation story."""
+        swing = math.sin(self.t / 25.0 + 1.0)  # different phase from racks
+
+        motor_temp = CRAC_BASE["fan_motor_temp_c"] + 1.5 * swing + random.uniform(-0.4, 0.4)
+        filter_dp = CRAC_BASE["filter_dp_pa"] + 4.0 * swing + random.uniform(-3.0, 3.0)
+        airflow = CRAC_BASE["airflow_cfm"] - 20.0 * abs(swing) + random.uniform(-25, 25)
+        vibration = CRAC_BASE["fan_vibration_mm_s"] + 0.15 * swing + random.uniform(-0.05, 0.05)
+        fan_rpm = CRAC_BASE["fan_rpm"] + 60 * swing + random.uniform(-20, 20)
+        compressor = CRAC_BASE["compressor_load_pct"] + 3.0 * swing + random.uniform(-1.5, 1.5)
+        motor_current = CRAC_BASE["fan_motor_current_a"] + 0.1 * swing + random.uniform(-0.05, 0.05)
+
+        if self.anomaly_active:
+            # Same elapsed-time clock as the rack ramp, but reaches its
+            # plateau sooner (CRAC_ANOMALY_RAMP_FRACTION), matching the
+            # plan's claim that CRAC telemetry gives earlier lead time than
+            # the rack symptoms it's driving.
+            crac_full_ramp_at = ANOMALY_MAX_RISE / ANOMALY_INLET_RAMP_PER_SEC
+            progress = min(1.0, self.anomaly_elapsed / (crac_full_ramp_at * CRAC_ANOMALY_RAMP_FRACTION))
+
+            motor_temp = CRAC_BASE["fan_motor_temp_c"] + CRAC_ANOMALY_MOTOR_TEMP_RISE * progress \
+                         + random.uniform(-0.3, 0.3)
+            filter_dp = CRAC_BASE["filter_dp_pa"] + CRAC_ANOMALY_FILTER_DP_RISE * progress \
+                        + random.uniform(-2.0, 2.0)
+            airflow = CRAC_BASE["airflow_cfm"] - CRAC_ANOMALY_AIRFLOW_DROP * progress \
+                      + random.uniform(-15, 15)
+            vibration = CRAC_BASE["fan_vibration_mm_s"] + CRAC_ANOMALY_VIBRATION_RISE * progress \
+                        + random.uniform(-0.05, 0.05)
+            compressor = CRAC_BASE["compressor_load_pct"] + CRAC_ANOMALY_COMPRESSOR_RISE * progress \
+                         + random.uniform(-1.0, 1.0)
+            fan_rpm = CRAC_BASE["fan_rpm"] + 250 * progress + random.uniform(-15, 15)
+            motor_current = CRAC_BASE["fan_motor_current_a"] + 1.8 * progress + random.uniform(-0.05, 0.05)
+
+        return {
+            "fan_rpm": int(max(0, fan_rpm)),
+            "fan_motor_current_a": round(max(0, motor_current), 2),
+            "fan_motor_temp_c": round(motor_temp, 1),
+            "fan_vibration_mm_s": round(max(0, vibration), 2),
+            "filter_dp_pa": round(max(0, filter_dp), 1),
+            "airflow_cfm": round(max(0, airflow), 0),
+            "supply_air_temp_c": round(CRAC_BASE["supply_air_temp_c"] + 0.3 * swing, 1),
+            "return_air_temp_c": round(CRAC_BASE["return_air_temp_c"] + 0.3 * swing, 1),
+            "compressor_load_pct": round(max(0, min(100, compressor)), 1),
+        }
+
+    @staticmethod
+    def _crac_threshold_flags(r):
+        """Same rule set as the CoolingTwin — kept here too so the console
+        heartbeat and CSV log are self-explanatory without cross-referencing
+        the twin code."""
+        flags = []
+        if r["fan_motor_temp_c"] >= CRAC_MOTOR_TEMP_TRIP:
+            flags.append("bearing_overheat")
+        if r["filter_dp_pa"] >= CRAC_FILTER_DP_TRIP:
+            flags.append("filter_restriction")
+        if r["airflow_cfm"] <= CRAC_NOMINAL_AIRFLOW * CRAC_AIRFLOW_TRIP_PCT:
+            flags.append("airflow_loss")
+        return flags
+
+    def _crac_message(self):
+        vals = self._crac_reading()
+        return {
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "unit_id": CRAC_UNIT_ID,
+            **vals,
+            "threshold_flags": self._crac_threshold_flags(vals),
+        }
+
+    def _message(self, rack, phase):
+        vals = self._reading_for_rack(rack, phase)
+        msg = {
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "rack_id": rack["rack_id"],
+            "location": rack["location"],
+            **vals,
+            "status": self._status(vals),
+        }
+        return msg
+
+    # -- publish loop --------------------------------------------------------
+
+    def _publish(self, msg):
+        topic = f"{TOPIC_BASE}/{msg['rack_id']}"
+        payload = json.dumps(msg)
+        if self.client:
+            self.client.publish(topic, payload)
+        if self.csv_writer:
+            self.csv_writer.writerow(msg)
+            self.csv_file.flush()
+            with open("room_data.json", "a") as jf:
+                jf.write(payload + "\n")
+
+    def _publish_crac(self, msg):
+        topic = f"{TOPIC_BASE}/{msg['unit_id']}"  # datacenter/racks/CRAC-01
+        payload = json.dumps(msg)
+        if self.client:
+            self.client.publish(topic, payload)
+        if self.crac_csv_writer:
+            row = dict(msg)
+            row["threshold_flags"] = ",".join(row["threshold_flags"])
+            self.crac_csv_writer.writerow(row)
+            self.crac_csv_file.flush()
+            with open("crac_data.json", "a") as jf:
+                jf.write(payload + "\n")
+
+    def run(self):
+        # optional auto-trigger for --anomaly
+        auto_at = 20.0 if self.args.anomaly else None
+
+        print(f"Publishing to {TOPIC_BASE}/<rack>  every {PUBLISH_INTERVAL}s")
+        print("Commands:  a<Enter> = trigger anomaly   q<Enter> = quit\n")
+
+        while self.running:
+            for i, rack in enumerate(RACKS):
+                msg = self._message(rack, phase=i * 2.0)
+                self._publish(msg)
+
+            crac_msg = self._crac_message()
+            self._publish_crac(crac_msg)
+
+            # console heartbeat on rack A + CRAC-01
+            a = self.racks_snapshot()
+            flag = "  <<< ANOMALY" if self.anomaly_active else ""
+            print(f"t={int(self.t):3d}s  {a['rack_id']}  "
+                  f"inlet={a['inlet_temperature']:4.1f}C  "
+                  f"exhaust={a['exhaust_temperature']:4.1f}C  "
+                  f"fan={a['fan_speed']:4d}  power={a['power_draw']:4.1f}kW  "
+                  f"[{a['status']}]{flag}")
+            crac_flag_str = ",".join(crac_msg["threshold_flags"]) or "-"
+            print(f"         CRAC-01  motor_temp={crac_msg['fan_motor_temp_c']:5.1f}C  "
+                  f"filter_dp={crac_msg['filter_dp_pa']:5.1f}Pa  "
+                  f"airflow={crac_msg['airflow_cfm']:5.0f}cfm  "
+                  f"vib={crac_msg['fan_vibration_mm_s']:4.2f}mm/s  "
+                  f"[{crac_flag_str}]")
+
+            time.sleep(PUBLISH_INTERVAL)
+            self.t += PUBLISH_INTERVAL
+            if self.anomaly_active:
+                self.anomaly_elapsed += PUBLISH_INTERVAL
+
+            if auto_at is not None and self.t >= auto_at and not self.anomaly_active:
+                self.trigger_anomaly()
+                auto_at = None
+
+    def racks_snapshot(self):
+        """Regenerate rack A's current reading for the console line."""
+        return self._message(RACKS[0], phase=0.0)
+
+    def trigger_anomaly(self):
+        if not self.anomaly_active:
+            self.anomaly_active = True
+            self.anomaly_elapsed = 0.0
+            print("\n*** CRAC DEGRADATION TRIGGERED - inlet temps will climb ***\n")
+
+    def stop(self):
+        self.running = False
+
+
+# ---------------------------------------------------------------------------
+# Input thread for interactive control (CLI use only — see run_simulator()
+# below for the headless/embedded path used when this runs alongside the
+# twins in a single deployed process, which has no stdin to read from).
+# ---------------------------------------------------------------------------
+
+def input_loop(sim):
+    for line in sys.stdin:
+        cmd = line.strip().lower()
+        if cmd == "a":
+            sim.trigger_anomaly()
+        elif cmd == "q":
+            sim.stop()
+            break
+
+
+# ---------------------------------------------------------------------------
+# Embeddable entry point — used by main.py to run the simulator in the same
+# process as the twins/orchestrator (single-service deploy). Differs from
+# main() below in two ways:
+#   1. TLS + username/password auth, via the same MQTT_TLS/MQTT_USERNAME/
+#      MQTT_PASSWORD env vars base_twin.py and orchestrator.py already use
+#      — the CLI main() has neither, since it's built for the local
+#      anonymous mosquitto.conf broker.
+#   2. No stdin-reading input thread — a deployed worker has no terminal
+#      to type "a"/"q" into. Anomaly trigger is controlled by the
+#      AUTO_ANOMALY env var instead (auto-fires 20s after start, same
+#      timing as --anomaly on the CLI).
+# ---------------------------------------------------------------------------
+
+class _EmbeddedArgs:
+    """Mimics the argparse.Namespace Simulator/run() expect, without a
+    real command line — only ever used inside another process
+    (main.py), never as __main__."""
+    def __init__(self, anomaly):
+        self.csv = False
+        self.anomaly = anomaly
+
+
+def run_simulator(host, port, use_tls=False, username=None, password=None, auto_anomaly=False):
+    if not HAVE_MQTT:
+        raise RuntimeError("paho-mqtt not installed — required to run the simulator")
+
+    sim = Simulator(_EmbeddedArgs(anomaly=auto_anomaly))
+    status_topic = "datacenter/status/simulator"
+
+    client = mqtt.Client(client_id="sensor-simulator")
+    if use_tls:
+        client.tls_set()
+    if username:
+        client.username_pw_set(username, password)
+    # Same LWT pattern as base_twin.py / orchestrator.py — if this
+    # process dies, the dashboard should be able to tell the telemetry
+    # source went dark, not just see the rack cards go stale.
+    client.will_set(status_topic, payload="offline", qos=1, retain=True)
+    client.reconnect_delay_set(min_delay=1, max_delay=30)
+
+    for attempt in range(1, 13):
+        try:
+            client.connect(host, port, keepalive=60)
+            break
+        except (ConnectionRefusedError, OSError) as e:
+            print(f"[simulator] connect attempt {attempt}/12 failed ({e}); retrying in 5s")
+            time.sleep(5)
+    else:
+        raise ConnectionError(f"[simulator] could not connect to {host}:{port} after 12 attempts")
+
+    client.loop_start()
+    client.publish(status_topic, "online", qos=1, retain=True)
+    sim.client = client
+    print(f"[simulator] connected to {host}:{port} (tls={use_tls})")
+
+    try:
+        sim.run()
+    finally:
+        sim.stop()
+        client.publish(status_topic, "offline", qos=1, retain=True)
+        client.loop_stop()
+        client.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# Main — CLI entry point for standalone/local use (python sensor_simulator.py)
+# ---------------------------------------------------------------------------
+
+def main():
+    ap = argparse.ArgumentParser(description="Data center twin telemetry simulator")
+    ap.add_argument("--host", default="localhost", help="MQTT broker host")
+    ap.add_argument("--port", type=int, default=1883, help="MQTT broker port")
+    ap.add_argument("--anomaly", action="store_true",
+                    help="auto-trigger the CRAC anomaly 20s after start")
+    ap.add_argument("--csv", action="store_true",
+                    help="also append readings to room_data.csv / room_data.json")
+    ap.add_argument("--no-mqtt", action="store_true",
+                    help="run without a broker (console/CSV only)")
+    args = ap.parse_args()
+
+    sim = Simulator(args)
+
+    if not args.no_mqtt:
+        if not HAVE_MQTT:
+            print("paho-mqtt not installed. Run: pip install paho-mqtt")
+            print("Continuing in --no-mqtt mode.\n")
+        else:
+            client = mqtt.Client()
+            try:
+                client.connect(args.host, args.port, keepalive=60)
+                client.loop_start()
+                sim.client = client
+                print(f"Connected to MQTT broker at {args.host}:{args.port}")
+            except Exception as e:
+                print(f"Could not connect to broker ({e}). Running console-only.")
+
+    # interactive control thread
+    t = threading.Thread(target=input_loop, args=(sim,), daemon=True)
+    t.start()
+
+    try:
+        sim.run()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        sim.stop()
+        if sim.client:
+            sim.client.loop_stop()
+            sim.client.disconnect()
+        if sim.csv_file:
+            sim.csv_file.close()
+        if sim.crac_csv_file:
+            sim.crac_csv_file.close()
+        print("\nStopped.")
+
+
+if __name__ == "__main__":
+    main()
