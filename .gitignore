@@ -1,0 +1,23 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Live-simulator local output (not the training dataset — that's
+# regenerated from dataset/generate_dataset.py, never committed)
+room_data.csv
+room_data.json
+crac_data.csv
+crac_data.json
+
+# Local broker artifacts if you run mosquitto manually
+*.pid
+mosquitto.log
+
+# Trained model — large (verify size before committing; see README
+# section 12.2). Uncomment the line below if you'd rather regenerate
+# it at deploy time than commit it.
+# models/*.joblib
+
+.env
+.venv/
+venv/
