@@ -3,12 +3,6 @@
 Scope per plan section 11.1: model training and evaluation, twin state
 objects, orchestrator, recommendation engine, inference service.
 
-**No HTML anywhere in this bundle — the dashboard is S3's deliverable,
-not S2's, and is intentionally excluded.** `sensor_simulator.py` is
-included only because S2's twins/orchestrator need something publishing
-telemetry to actually run and be tested against — it's S1's file, not
-S2's, but S2 can't demo without it.
-
 ## Layout
 
 ```
