@@ -1,8 +1,14 @@
-# Render blueprint for the always-on twins+orchestrator service
-# (plan section 12.1). Deploy: connect this repo in the Render
+# Render blueprint for the always-on twins+orchestrator(+simulator)
+# service (plan section 12.1). Deploy: connect this repo in the Render
 # dashboard, it auto-detects this file (Blueprints -> New Blueprint
 # Instance). Fill in the MQTT_* env vars from your HiveMQ Cloud
 # cluster's Connection Details tab before the first deploy.
+#
+# RUN_SIMULATOR=true means this ONE service also generates telemetry
+# (single-service deploy — telemetry source + twins + orchestrator all
+# together). Set RUN_SIMULATOR=false (or delete the two simulator env
+# vars below) if you're pointing at real hardware instead, or running
+# the simulator as a separate service.
 
 services:
   - type: worker          # not a web service — this publishes/subscribes
@@ -23,3 +29,8 @@ services:
         sync: false
       - key: MQTT_PASSWORD
         sync: false
+      - key: RUN_SIMULATOR
+        value: "true"
+      - key: AUTO_ANOMALY
+        value: "false"     # set true to have the demo auto-trigger a
+                            # CRAC-01 fault ~20s after every restart
