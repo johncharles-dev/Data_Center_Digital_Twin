@@ -67,6 +67,8 @@ import threading
 import time
 from datetime import datetime, timezone
 
+from mqtt_identity import apply_credentials
+
 try:
     import paho.mqtt.client as mqtt
     HAVE_MQTT = True
@@ -185,6 +187,31 @@ ANOMALY_MAX_POWER_RISE = 2.2   # kW of extra draw the fault tops out at (-> ~8.0
 # making the fault itself steeper.
 
 SIM_SAMPLE_INTERVAL_S = 30.0   # dataset/generate_dataset.py SAMPLE_INTERVAL_S
+
+# --loop pacing, in SIMULATED seconds.
+#
+# The cycle is balanced so a visitor arriving at a random moment is most
+# likely to land during the RISE — the phase where the model has warned and
+# the threshold rules have not yet fired, which is the entire argument for
+# the system. A visitor who lands on a screen that is already fully red has
+# been shown an alarm, which any thermostat can do.
+#
+# Measured shape of one fault: the CRAC trips its first sensor threshold
+# about 96 simulated minutes in, and the classifier saturates near 1.0 well
+# before that. The remaining ~6.4 hours of ANOMALY_DURATION_S are a flat red
+# tail that demonstrates nothing, so --loop ends the cycle shortly after the
+# trip instead of running it out.
+#
+# Note what is NOT done here: the fault is not made steeper to shorten it.
+# The ramp rate is what the model's two slope features were trained on —
+# steepening it would push them outside the training distribution and make
+# the prediction meaningless. The ramp is untouched; only the dead tail is
+# trimmed.
+#
+# Resulting cycle ≈ 30 min healthy + ~96 min rising + 15 min tripped, so
+# roughly two thirds of arrivals land mid-rise.
+HEALTHY_DWELL_S = 1800.0    # ≥ one slope window (600s) so the buffer refills
+FAILED_DWELL_S = 900.0      # measured from the FIRST trip, not from onset
 ANOMALY_DURATION_S    = 8 * 3600.0   # 8h — the training set's median TTF
 
 # Baseline sine periods, in simulated seconds. These used to be ~20s,
@@ -203,6 +230,22 @@ class Simulator:
         self.t = 0.0                 # SIMULATED seconds since start
         self.anomaly_active = False
         self.anomaly_elapsed = 0.0   # SIMULATED seconds since the fault began
+        self.healthy_elapsed = 0.0   # SIMULATED seconds healthy (--loop pacing)
+        self.tripped_elapsed = 0.0   # SIMULATED seconds since first sensor trip
+        self.cycle = 0               # completed degradation cycles (--loop)
+
+        # Identifies THIS degradation run on every message it produces.
+        #
+        # MQTT retains the last message on the decision topics, so a consumer
+        # connecting during a healthy stretch is handed the previous run's
+        # recommendation ("motor at the Class F alarm point") as if it were
+        # current. A run id lets a consumer discard anything from a run that
+        # has already ended instead of rendering it as live state.
+        #
+        # Seeded from wall-clock seconds so ids from an earlier process are
+        # strictly lower than this process's, and a restart cannot make a
+        # stale retained message look current again.
+        self.run_id = int(time.time()) * 1000 + 1
 
         # Simulated seconds advanced per publish tick, hard-capped at one
         # training sample interval so the stream is never coarser than the
@@ -390,6 +433,7 @@ class Simulator:
         return {
             "timestamp": self._sim_timestamp(),
             "unit_id": CRAC_UNIT_ID,
+            "run_id": self.run_id,
             **vals,
             "threshold_flags": self._crac_threshold_flags(vals),
         }
@@ -400,6 +444,7 @@ class Simulator:
             "timestamp": self._sim_timestamp(),
             "rack_id": rack["rack_id"],
             "location": rack["location"],
+            "run_id": self.run_id,
             **vals,
             "status": self._status(vals),
         }
@@ -479,6 +524,27 @@ class Simulator:
                 self.trigger_anomaly()
                 auto_at = None
 
+            # --loop: cycle healthy -> degrading -> failed -> healthy forever.
+            #
+            # Without this the demo has one shot: whoever opens the link after
+            # the fault completes sees a system parked at FAILED with flat
+            # slopes, which looks broken rather than finished. Looping means
+            # any arrival time lands somewhere in a live degradation.
+            if self.args.loop:
+                if not self.anomaly_active:
+                    self.healthy_elapsed += self.sim_step
+                    if self.healthy_elapsed >= HEALTHY_DWELL_S:
+                        self.trigger_anomaly()
+                else:
+                    # Count time since the CRAC's own sensors tripped, not
+                    # since the fault began — that is when the flat red tail
+                    # starts, and it is the part worth cutting short.
+                    if crac_msg["threshold_flags"]:
+                        self.tripped_elapsed += self.sim_step
+                    if (self.tripped_elapsed >= FAILED_DWELL_S
+                            or self.anomaly_elapsed >= ANOMALY_DURATION_S):
+                        self.reset_anomaly()
+
     def racks_snapshot(self):
         """Regenerate rack A's current reading for the console line."""
         return self._message(RACKS[0], phase=0.0)
@@ -487,7 +553,28 @@ class Simulator:
         if not self.anomaly_active:
             self.anomaly_active = True
             self.anomaly_elapsed = 0.0
-            print("\n*** CRAC DEGRADATION TRIGGERED - inlet temps will climb ***\n")
+            self.healthy_elapsed = 0.0
+            self.tripped_elapsed = 0.0
+            self.cycle += 1
+            print(f"\n*** CRAC DEGRADATION TRIGGERED (cycle {self.cycle}) "
+                  f"- inlet temps will climb ***\n")
+
+    def reset_anomaly(self):
+        """Return to healthy and start the cycle again (--loop).
+
+        Only the fault state is cleared. self.t — the simulated clock — keeps
+        advancing monotonically, because the twins measure their trend
+        features against payload timestamps: winding it back would produce a
+        negative elapsed time and a nonsense slope. A repaired CRAC is a new
+        healthy period later in the day, not a trip back to this morning.
+        """
+        self.anomaly_active = False
+        self.anomaly_elapsed = 0.0
+        self.healthy_elapsed = 0.0
+        self.tripped_elapsed = 0.0
+        self.run_id += 1          # everything published from here is a new run
+        print(f"\n*** CRAC REPLACED - cycle {self.cycle} complete, "
+              f"returning to healthy ***\n")
 
     def stop(self):
         self.running = False
@@ -527,9 +614,10 @@ class _EmbeddedArgs:
     """Mimics the argparse.Namespace Simulator/run() expect, without a
     real command line — only ever used inside another process
     (main.py), never as __main__."""
-    def __init__(self, anomaly):
+    def __init__(self, anomaly, loop=False):
         self.csv = False
         self.anomaly = anomaly
+        self.loop = loop
 
 
 def run_simulator(host, port, use_tls=False, username=None, password=None, auto_anomaly=False):
@@ -544,6 +632,10 @@ def run_simulator(host, port, use_tls=False, username=None, password=None, auto_
         client.tls_set()
     if username:
         client.username_pw_set(username, password)
+    else:
+        # No explicit credentials passed in (the RUN_SIMULATOR in-process
+        # path): fall back to this service's own identity from the env.
+        apply_credentials(client, "sensor-simulator")
     # Same LWT pattern as base_twin.py / orchestrator.py — if this
     # process dies, the dashboard should be able to tell the telemetry
     # source went dark, not just see the rack cards go stale.
@@ -592,6 +684,10 @@ def main():
                          "to watch the same degradation faster")
     ap.add_argument("--anomaly", action="store_true",
                     help="auto-trigger the CRAC anomaly 20s after start")
+    ap.add_argument("--loop", action="store_true",
+                    help="cycle healthy -> degrading -> failed -> healthy "
+                         "continuously, so a viewer arriving at any moment "
+                         "sees a live degradation rather than a finished one")
     ap.add_argument("--csv", action="store_true",
                     help="also append readings to room_data.csv / room_data.json")
     ap.add_argument("--no-mqtt", action="store_true",
@@ -605,12 +701,33 @@ def main():
             print("paho-mqtt not installed. Run: pip install paho-mqtt")
             print("Continuing in --no-mqtt mode.\n")
         else:
-            client = mqtt.Client()
+            # Identify as `sensor-simulator`: that is the username the ACL
+            # grants datacenter/racks/* to (mosquitto/acl). An anonymous
+            # client is refused outright now.
+            client = mqtt.Client(client_id="sensor-simulator")
+            if os.environ.get("MQTT_TLS", "false").lower() == "true":
+                client.tls_set()
+            apply_credentials(client, "sensor-simulator")
+
+            # connect() only opens the socket — the broker's verdict arrives
+            # later, in CONNACK. Without this callback a rejected credential
+            # printed "Connected" and then published into a void, which is
+            # the worst version of this failure: silent.
+            def _on_connect(cl, userdata, flags, rc):
+                if rc == 0:
+                    print(f"Connected to MQTT broker at {args.host}:{args.port}")
+                else:
+                    print(f"!! BROKER REFUSED THE CONNECTION: rc={rc} "
+                          f"({mqtt.connack_string(rc)})")
+                    print("!! No telemetry will be published. Check "
+                          "MQTT_USERNAME_SENSOR_SIMULATOR / MQTT_PASSWORD_* "
+                          "(run.sh exports these from mosquitto/credentials.json).")
+
+            client.on_connect = _on_connect
             try:
                 client.connect(args.host, args.port, keepalive=60)
                 client.loop_start()
                 sim.client = client
-                print(f"Connected to MQTT broker at {args.host}:{args.port}")
             except Exception as e:
                 print(f"Could not connect to broker ({e}). Running console-only.")
 

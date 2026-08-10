@@ -80,7 +80,20 @@ class CoolingTwin(BaseTwin):
             "return_air_temp_c": payload.get("return_air_temp_c"),
             "compressor_load_pct": payload.get("compressor_load_pct"),
         })
-        self._record_history(_payload_time(payload))
+        # Carry the SIMULATED clock forward into twin state. Consumers that
+        # plot or measure elapsed time need the same clock the slopes were
+        # measured against — wall clock is meaningless here, because a tick
+        # advances simulated time by up to 30s regardless of how fast the
+        # playback runs.
+        sim_time = _payload_time(payload)
+        self.state["sim_time"] = sim_time
+        self.state["timestamp"] = payload.get("timestamp")
+        # Which degradation run this state belongs to. Carried through so a
+        # consumer can tell a retained message from a finished run apart from
+        # current state — see sensor_simulator.py's run_id.
+        self.state["run_id"] = payload.get("run_id")
+
+        self._record_history(sim_time)
         self.state["motor_temp_slope_10min"] = self._slope(self._motor_temp_history)
         self.state["filter_dp_slope_10min"] = self._slope(self._filter_dp_history)
         self.state["cooling_effectiveness"] = self._effectiveness()

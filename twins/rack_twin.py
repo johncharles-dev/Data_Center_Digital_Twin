@@ -30,6 +30,7 @@ class RackTwin(BaseTwin):
         self.state.update({
             "rack_id": self.rack_id,
             "location": payload.get("location"),
+            "run_id": payload.get("run_id"),
             "inlet_temperature": inlet,
             "exhaust_temperature": exhaust,
             "delta_t": None if None in (inlet, exhaust) else round(exhaust - inlet, 2),

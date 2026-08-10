@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CRAC-01 Digital Twin — live</title>
+<style>
+:root{
+  --bg:#0E1620; --panel:#151F2B; --sunk:#101923; --line:#243343; --line-soft:#1D2937;
+  --ink:#E7EEF4; --dim:#8CA0B3; --faint:#5C7185;
+  --cool:#4FB0C6; --warn:#E0A03A; --trip:#D65C54; --ok:#4E9E7E;
+  --mono:ui-monospace,"Cascadia Mono","SF Mono",Menlo,Consolas,monospace;
+  --sans:ui-sans-serif,system-ui,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --r:9px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{
+  background:var(--bg); color:var(--ink); font-family:var(--sans);
+  font-size:14px; line-height:1.45; padding:14px; display:flex;
+  flex-direction:column; gap:12px; -webkit-font-smoothing:antialiased;
+  max-width:1760px; margin:0 auto; width:100%;
+}
+.num{font-family:var(--mono); font-variant-numeric:tabular-nums}
+h2{font-size:10px; letter-spacing:.17em; text-transform:uppercase; color:var(--faint);
+   font-weight:600; margin:0 0 9px}
+.card{background:var(--panel); border:1px solid var(--line); border-radius:var(--r);
+      padding:12px 14px; display:flex; flex-direction:column; min-width:0}
+
+/* ── header ── */
+.bar{display:flex; align-items:center; gap:12px; flex-wrap:wrap}
+.dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--ok);
+     transition:background .5s ease, box-shadow .5s ease}
+.bar h1{font-size:17px; font-weight:650; margin:0; letter-spacing:-.01em; white-space:nowrap}
+.bar .sub{font-size:12px; color:var(--dim); font-family:var(--mono)}
+.bar .right{margin-left:auto; display:flex; gap:7px; flex-wrap:wrap}
+.chip{font-family:var(--mono); font-size:11px; color:var(--dim); border:1px solid var(--line);
+      border-radius:5px; padding:4px 9px; background:var(--panel); white-space:nowrap}
+.chip.on{color:var(--ok); border-color:rgba(78,158,126,.45)}
+
+/* ── signature band ── */
+.lead{background:var(--panel); border:1px solid var(--line); border-radius:var(--r); padding:13px 16px 8px}
+.lead-top{display:flex; align-items:baseline; gap:11px; flex-wrap:wrap; margin-bottom:14px}
+.lead-top .eb{font-size:10px; letter-spacing:.17em; text-transform:uppercase;
+              color:var(--faint); font-weight:600}
+.lead-top .say{font-size:13px; color:var(--dim)}
+.lead-top .say b{color:var(--ink); font-weight:650}
+.track{position:relative; height:50px; margin:0 62px}
+.rail{position:absolute; inset:16px 0 auto; height:8px; border-radius:4px; overflow:hidden;
+      background:linear-gradient(90deg,#1E2E3C 0%,#293846 44%,#463829 68%,#472B29 100%)}
+.rail .gap{position:absolute; inset:0 auto 0 0; width:0;
+  background:repeating-linear-gradient(115deg,rgba(79,176,198,.6) 0 5px,rgba(79,176,198,.16) 5px 11px);
+  transition:left .4s ease,width .4s ease}
+.rail .now{position:absolute; top:-4px; bottom:-4px; width:2px; background:var(--ink); left:0}
+.mk{position:absolute; top:0; width:110px; transform:translateX(-50%); text-align:center;
+    left:-999px; transition:left .4s ease}
+.mk i{display:block; width:2px; height:16px; margin:0 auto; background:currentColor}
+.mk span{display:block; font-size:9.5px; letter-spacing:.09em; text-transform:uppercase;
+         font-weight:650; margin-top:21px}
+.mk.model{color:var(--cool)} .mk.rules{color:var(--warn)}
+.gaplab{position:absolute; top:-3px; transform:translateX(-50%); left:-999px; white-space:nowrap;
+        font-family:var(--mono); font-size:12px; color:var(--cool);
+        background:var(--panel); padding:0 8px; transition:left .4s ease}
+
+/* ── grid ── */
+.grid{display:grid; gap:12px; grid-template-columns:repeat(4,1fr); align-items:stretch}
+.g-risk{grid-column:span 1} .g-room{grid-column:span 1}
+.g-chart{grid-column:span 2}
+.g-crac{grid-column:span 1} .g-act{grid-column:span 2}
+.g-energy{grid-column:span 1} .g-log{grid-column:span 4}
+
+/* ── risk ── */
+.rv{display:flex; align-items:baseline; gap:3px}
+.rv b{font-family:var(--mono); font-size:46px; font-weight:600; line-height:.95;
+      letter-spacing:-.03em; color:var(--warn); transition:color .5s ease}
+.rv i{font-family:var(--mono); font-size:19px; color:var(--dim); font-style:normal}
+.kv{display:flex; justify-content:space-between; align-items:baseline; gap:10px;
+    padding:7px 0; border-top:1px solid var(--line-soft)}
+.kv span{font-size:11.5px; color:var(--dim)} .kv b{font-family:var(--mono); font-size:14px; font-weight:600}
+.mode-chip{display:inline-block; margin-top:11px; font-family:var(--mono); font-size:11px;
+  padding:4px 9px; border-radius:5px; border:1px solid rgba(224,160,58,.45);
+  color:var(--warn); background:rgba(224,160,58,.08)}
+
+/* ── asset rows ── */
+.as{display:flex; align-items:center; gap:9px; padding:6px 0}
+.as+.as{border-top:1px solid var(--line-soft)}
+.as .b{width:7px;height:7px;border-radius:50%;flex:none; transition:background .5s ease}
+.as .n{font-family:var(--mono); font-size:11.5px; color:var(--dim); flex:none}
+.as .s{font-size:10px; font-weight:650; letter-spacing:.05em; text-transform:uppercase;
+       margin-left:auto; transition:color .5s ease}
+
+/* ── telemetry bars ── */
+.tl{padding:6px 0} .tl+.tl{border-top:1px solid var(--line-soft)}
+.tl .top{display:flex; justify-content:space-between; align-items:baseline; gap:8px; margin-bottom:5px}
+.tl .lab{font-size:11px; color:var(--dim)}
+.tl .val{font-family:var(--mono); font-size:12px; font-weight:600}
+.meter{height:4px; border-radius:2px; background:var(--sunk); overflow:hidden; position:relative}
+.meter em{position:absolute; inset:0 auto 0 0; width:0; border-radius:2px;
+          transition:width .45s ease, background .5s ease}
+
+/* ── chart ── */
+.chart-wrap{flex:1 1 auto; min-height:210px; max-height:300px} .chart-wrap svg{width:100%; height:100%; display:block}
+.legend{display:flex; gap:15px; flex-wrap:wrap; margin-top:9px}
+.legend span{font-size:11px; color:var(--dim); white-space:nowrap}
+.legend i{display:inline-block; width:13px; height:2px; vertical-align:middle; margin-right:5px}
+
+/* ── action ── */
+.verb{font-size:18px; font-weight:650; letter-spacing:-.01em; margin-bottom:5px; transition:color .5s}
+.why{font-size:12.5px; color:var(--dim); line-height:1.5}
+.trips{display:flex; flex-wrap:wrap; gap:6px; margin-top:11px}
+.trip{font-family:var(--mono); font-size:10.5px; padding:3px 8px; border-radius:11px;
+      border:1px solid var(--line); color:var(--faint); transition:all .4s ease}
+.trip.on{border-color:rgba(224,160,58,.45); color:var(--warn); background:rgba(224,160,58,.09)}
+.note{font-size:10.5px; color:var(--faint); margin-top:10px; line-height:1.5}
+.meta{margin-top:10px; padding-top:9px; border-top:1px solid var(--line-soft);
+      font-family:var(--mono); font-size:10.5px; color:var(--faint)}
+
+/* ── log ── */
+.log{max-height:190px; overflow-y:auto; scrollbar-width:thin}
+.row{display:flex; gap:9px; padding:5px 0; border-bottom:1px solid var(--line-soft);
+     font-size:11.5px; align-items:baseline; animation:in .35s ease}
+@keyframes in{from{opacity:0; transform:translateY(-3px)}to{opacity:1; transform:none}}
+.row .t{font-family:var(--mono); color:var(--faint); font-size:10.5px; flex:none}
+.row .k{font-size:9.5px; letter-spacing:.1em; text-transform:uppercase; font-weight:650;
+        flex:none; width:52px}
+.row .k.pred{color:var(--cool)} .row .k.act{color:var(--warn)} .row .k.sec{color:var(--ok)}
+.row .m{color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+
+/* ── responsive ── */
+@media(max-width:1240px){
+  .grid{grid-template-columns:repeat(2,1fr)}
+  .g-chart{grid-column:span 2} .g-act{grid-column:span 2} .g-log{grid-column:span 2}
+}
+@media(max-width:700px){
+  body{padding:10px; font-size:13.5px}
+  .grid{grid-template-columns:1fr}
+  .g-risk,.g-room,.g-chart,.g-crac,.g-act,.g-energy,.g-log{grid-column:span 1}
+  .track{margin:0 46px}
+  .bar .right{width:100%; margin-left:0}
+  .rv b{font-size:38px}
+  .mk span{font-size:8.5px} .mk{width:88px}
+  .chart-wrap{min-height:180px}
+}
+@media(prefers-reduced-motion:reduce){ *{transition:none!important; animation:none!important} }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <div class="dot" id="dot"></div>
+  <h1>CRAC-01 Digital Twin</h1>
+  <div class="sub">SR-RACK-01 · 02 · 03</div>
+  <div class="right">
+    <div class="chip on" id="conn">live</div>
+    <div class="chip" id="msgs">0 msgs</div>
+    <div class="chip" id="broker">wss://…</div>
+    <div class="chip num" id="clock">—</div>
+  </div>
+</div>
+
+<div class="lead">
+  <div class="lead-top">
+    <div class="eb">Warning timeline · current degradation run</div>
+    <div class="say" id="say">—</div>
+  </div>
+  <div class="track">
+    <div class="rail"><div class="gap" id="gap"></div><div class="now" id="now"></div></div>
+    <div class="mk model" id="mkM"><i></i><span>Model warned</span></div>
+    <div class="mk rules" id="mkR"><i></i><span>Threshold tripped</span></div>
+    <div class="gaplab" id="glab"></div>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card g-risk">
+    <h2>CRAC-01 failure risk · 4 h horizon</h2>
+    <div class="rv"><b id="prob">—</b><i>%</i></div>
+    <div><span class="mode-chip" id="modeChip" style="display:none"></span></div>
+    <div class="kv" style="margin-top:11px"><span>Time to failure</span><b id="ttf">—</b></div>
+    <div class="kv"><span>Lead over thresholds</span><b id="leadv">—</b></div>
+  </div>
+
+  <div class="card g-room"><h2>Room</h2><div id="assets"></div></div>
+
+  <div class="card g-chart">
+    <h2>Failure probability · 8 simulated hours</h2>
+    <div class="chart-wrap"><svg id="svg" preserveAspectRatio="none"></svg></div>
+    <div class="legend">
+      <span><i style="background:var(--cool)"></i>Model probability</span>
+      <span><i style="background:var(--warn)"></i>Action threshold (0.50)</span>
+      <span><i style="background:var(--trip)"></i>Threshold rule trip</span>
+    </div>
+  </div>
+
+  <div class="card g-crac"><h2>CRAC-01 telemetry vs trip point</h2><div id="tele"></div></div>
+
+  <div class="card g-act">
+    <h2>Recommended action</h2>
+    <div class="verb" id="verb">—</div>
+    <div class="why" id="why">Waiting for the first prediction.</div>
+    <div class="trips" id="trips"></div>
+    <div class="note">Sensor threshold trips carried with the prediction — not per-feature model attribution.</div>
+    <div class="meta" id="meta"></div>
+  </div>
+
+  <div class="card g-energy"><h2>Energy</h2><div id="energy"></div></div>
+
+  <div class="card g-log"><h2>Decision log · audited</h2><div class="log" id="log"></div></div>
+</div>
+
+<!-- Vendored, no CDN. Chart.js is gone: the chart is hand-drawn SVG
+     (see draw() in app.js), so it was dead weight. -->
+<script src="vendor/mqtt.min.js"></script>
+<!-- Generated by serve_demo.sh; holds the read-only `viewer` credential. -->
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

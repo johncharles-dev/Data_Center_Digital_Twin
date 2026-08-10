@@ -26,6 +26,30 @@ MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "crac_failu
 TTF_REPORT_THRESHOLD = 0.5
 
 
+def _mode_from_flags(flags, proba):
+    """Which failure mechanism the evidence points at.
+
+    IMPORTANT: this is a RULE over the CRAC's own threshold flags, not a
+    model output. The trained artefact holds a binary classifier and a
+    time-to-failure regressor — there is no mode classifier in it, so
+    anything claiming to be a "predicted mode" from the model would be
+    invented. Consumers get `predicted_mode_basis: "rule"` alongside it so
+    the distinction survives onto the wire and onto the dashboard.
+
+    WARNING_ONLY is the state worth naming: the model has crossed its action
+    threshold while no sensor has passed its limit. That is precisely the
+    lead time the project exists to demonstrate, and calling it a named
+    mechanism would overstate what is known at that moment.
+    """
+    if "bearing_overheat" in flags:
+        return "FAN_MOTOR_OVERHEAT"
+    if "filter_restriction" in flags or "airflow_loss" in flags:
+        return "FILTER_BLOCKED"
+    if proba >= TTF_REPORT_THRESHOLD:
+        return "WARNING_ONLY"
+    return "NONE"
+
+
 class CRACFailureModel:
     def __init__(self):
         self.model = None
@@ -46,13 +70,16 @@ class CRACFailureModel:
         else:
             ttf_hours = None
 
+        flags = cooling_state.get("threshold_flags", [])
         return {
             "failure_probability": round(proba, 3),
             "time_to_failure_hours": ttf_hours,
-            "contributing_factors": cooling_state.get("threshold_flags", []),
+            "contributing_factors": flags,
+            "predicted_mode": _mode_from_flags(flags, proba),
+            "predicted_mode_basis": "rule",
         }
 
-    def _feature_vector(self, s):
+    def _feature_vector(self, s):  # noqa: E301
         # Built BY NAME from the model's own feature_cols, saved at
         # training time — not hardcoded here. A hardcoded list here is
         # exactly how this project ended up with a 7-vs-11 feature
@@ -74,4 +101,6 @@ class CRACFailureModel:
             "failure_probability": prob,
             "time_to_failure_hours": None,
             "contributing_factors": flags,
+            "predicted_mode": _mode_from_flags(flags, prob),
+            "predicted_mode_basis": "rule",
         }
