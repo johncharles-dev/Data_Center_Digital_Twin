@@ -1,0 +1,28 @@
+# Local broker for the digital twin.
+#
+# Start with ./run.sh, which bootstraps the credentials this file mounts.
+# Starting it directly with `docker compose up -d` works too, but only once
+# mosquitto/make_credentials.sh has been run at least once — without a passwd
+# file the broker starts and then refuses every connection.
+
+services:
+  broker:
+    image: eclipse-mosquitto:2
+    container_name: dcdt-broker
+    restart: unless-stopped
+    ports:
+      # Bound to the loopback interface deliberately. Nothing here is exposed
+      # on the LAN; the only route in from outside is Tailscale Funnel, which
+      # terminates TLS and proxies to 9001 (see serve_demo.sh).
+      - "127.0.0.1:1883:1883"
+      - "127.0.0.1:8883:8883"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      # .runtime/ holds copies of mosquitto.conf and acl owned by uid 1883,
+      # staged by make_credentials.sh. Mounting the git-tracked originals
+      # directly makes mosquitto warn that it will refuse to load files it
+      # does not own. Edit the originals in mosquitto/; ./run.sh re-syncs.
+      - ./mosquitto/.runtime/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/.runtime/acl:/mosquitto/config/acl:ro
+      - ./mosquitto/passwd:/mosquitto/config/passwd:ro
+      - ./mosquitto/certs:/mosquitto/certs:ro

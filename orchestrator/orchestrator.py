@@ -15,10 +15,12 @@ just show stale numbers with no indication anything's wrong.
 import json
 import os
 import time
+from datetime import datetime, timezone
 import paho.mqtt.client as mqtt
 
 from inference.model_loader import CRACFailureModel
 from orchestrator.rules import recommend_action
+from mqtt_identity import apply_credentials
 
 TWIN_IDS = ["cooling", "occupancy", "energy", "rack-SR-RACK-01", "rack-SR-RACK-02", "rack-SR-RACK-03"]
 
@@ -72,14 +74,15 @@ class Orchestrator:
         self.twin_state = {tid: {} for tid in TWIN_IDS}
         self.model = CRACFailureModel()
         self.status_topic = "datacenter/status/orchestrator"
+        # Monotonic decision counter — see _stamp().
+        self._seq = 0
 
         self.client = mqtt.Client(client_id="orchestrator")
         if use_tls:
             self.client.tls_set()
-        mqtt_user = os.environ.get("MQTT_USERNAME")
-        mqtt_pass = os.environ.get("MQTT_PASSWORD")
-        if mqtt_user:
-            self.client.username_pw_set(mqtt_user, mqtt_pass)
+        # The orchestrator is the only identity the ACL lets write
+        # datacenter/recommendations/room — see mosquitto/acl.
+        apply_credentials(self.client, "orchestrator")
 
         self.client.will_set(self.status_topic, payload="offline", qos=1, retain=True)
 
@@ -151,14 +154,49 @@ class Orchestrator:
             action = recommend_action(prediction, cooling, self.twin_state.get("energy", {}))
             self._publish_recommendation(action)
 
+    def _stamp(self, payload):
+        """Adds the audit fields every decision message carries.
+
+        `seq` is assigned HERE, by the producer, not by the audit sink. A
+        counter the sink assigns on receipt can only ever count what arrived
+        — it can never show a gap, because a message that never arrived is
+        not there to be skipped. Stamping at the source is what makes
+        "message 41 then message 43" detectable as a lost decision.
+
+        The counter is per-process and restarts at 1 when the orchestrator
+        restarts; audit/audit_sink.py reports that as a restart rather than
+        as a gap. Both fields are additive, so subscribers that ignore them
+        behave exactly as before.
+        """
+        self._seq += 1
+        payload = dict(payload)
+        payload["seq"] = self._seq
+        payload["source"] = "orchestrator"
+        payload["published_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # The simulated clock this decision was made against. Any consumer
+        # measuring lead time — "the model warned N minutes before the rules
+        # fired" — has to measure it on this clock, not on wall time.
+        cooling = self.twin_state.get("cooling", {})
+        payload["sim_time"] = cooling.get("sim_time")
+        payload["threshold_flags"] = cooling.get("threshold_flags", [])
+        # The run this decision belongs to. Predictions and recommendations
+        # are published RETAINED, so without this a consumer connecting in a
+        # healthy stretch is handed the previous run's recommendation and has
+        # no way to know it is describing a fault that has already been
+        # repaired.
+        payload["run_id"] = cooling.get("run_id")
+        return payload
+
     def _publish_prediction(self, prediction):
         self.client.publish(
-            "datacenter/predictions/CRAC-01", json.dumps(prediction), qos=1, retain=True
+            "datacenter/predictions/CRAC-01",
+            json.dumps(self._stamp(prediction)), qos=1, retain=True
         )
 
     def _publish_recommendation(self, action):
         self.client.publish(
-            "datacenter/recommendations/room", json.dumps(action), qos=1, retain=True
+            "datacenter/recommendations/room",
+            json.dumps(self._stamp(action)), qos=1, retain=True
         )
 
     def run_forever(self):

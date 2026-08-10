@@ -17,8 +17,12 @@ Also publishes liveness to datacenter/status/<TWIN_ID>:
 """
 import json
 import os
+import sys
 import time
 import paho.mqtt.client as mqtt
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from mqtt_identity import apply_credentials
 
 CONNECT_RETRY_DELAY_S = 5
 CONNECT_MAX_RETRIES = 12  # ~1 minute of retrying before giving up
@@ -39,13 +43,14 @@ class BaseTwin:
         self.state = {}
         self.status_topic = f"datacenter/status/{self.twin_id}"
 
-        self.client = mqtt.Client(client_id=f"twin-{self.twin_id}")
+        client_id = f"twin-{self.twin_id}"
+        self.client = mqtt.Client(client_id=client_id)
         if use_tls:
             self.client.tls_set()
-        mqtt_user = os.environ.get("MQTT_USERNAME")
-        mqtt_pass = os.environ.get("MQTT_PASSWORD")
-        if mqtt_user:
-            self.client.username_pw_set(mqtt_user, mqtt_pass)
+        # Each twin authenticates as itself, not as a shared account — all
+        # six run inside main.py's single process, so a shared credential
+        # would give every twin the union of all six ACLs.
+        apply_credentials(self.client, client_id)
 
         # Last-Will-and-Testament: broker auto-publishes this if the
         # connection drops without a clean disconnect (crash, network

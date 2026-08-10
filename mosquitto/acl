@@ -1,0 +1,101 @@
+# Topic access control, least privilege.
+#
+# Every identity gets exactly the topics its code already uses — the read
+# rules below were taken from each twin's subscriptions() method and the
+# write rules from its publish calls, not guessed:
+#
+#   twins/cooling_twin.py:68      -> datacenter/racks/CRAC-01
+#   twins/occupancy_twin.py:12    -> datacenter/occupancy/staff|workload
+#   twins/energy_twin.py:15       -> datacenter/racks/+
+#   twins/rack_twin.py:20         -> datacenter/racks/<own rack>
+#   orchestrator/orchestrator.py  -> datacenter/twin-state/+
+#
+# There is no default/anonymous section: with allow_anonymous false and no
+# `topic` lines outside a `user` block, an unlisted client gets nothing.
+#
+# THE SINGLE-WRITER RULE: `orchestrator` is the only identity in this file
+# with `topic write datacenter/recommendations/room`. A recommendation is the
+# system's actuating output — the thing a human acts on — so exactly one
+# component may assert one. tests/test_broker_security.py case 3 proves this
+# by having a twin try and fail.
+
+# ---------------------------------------------------------------- producers
+user sensor-simulator
+topic write datacenter/racks/SR-RACK-01
+topic write datacenter/racks/SR-RACK-02
+topic write datacenter/racks/SR-RACK-03
+topic write datacenter/racks/CRAC-01
+topic write datacenter/status/simulator
+
+user occupancy-publisher
+topic write datacenter/occupancy/staff
+topic write datacenter/occupancy/workload
+
+# ---------------------------------------------------------------- sub-twins
+# Each twin may publish its OWN state and status topic and nothing else, so a
+# compromised twin cannot forge another twin's state into the orchestrator.
+user twin-cooling
+topic read  datacenter/racks/CRAC-01
+topic write datacenter/twin-state/cooling
+topic write datacenter/status/cooling
+
+user twin-occupancy
+topic read  datacenter/occupancy/staff
+topic read  datacenter/occupancy/workload
+topic write datacenter/twin-state/occupancy
+topic write datacenter/status/occupancy
+
+user twin-energy
+topic read  datacenter/racks/+
+topic write datacenter/twin-state/energy
+topic write datacenter/status/energy
+
+user twin-rack-SR-RACK-01
+topic read  datacenter/racks/SR-RACK-01
+topic write datacenter/twin-state/rack-SR-RACK-01
+topic write datacenter/status/rack-SR-RACK-01
+
+user twin-rack-SR-RACK-02
+topic read  datacenter/racks/SR-RACK-02
+topic write datacenter/twin-state/rack-SR-RACK-02
+topic write datacenter/status/rack-SR-RACK-02
+
+user twin-rack-SR-RACK-03
+topic read  datacenter/racks/SR-RACK-03
+topic write datacenter/twin-state/rack-SR-RACK-03
+topic write datacenter/status/rack-SR-RACK-03
+
+# ------------------------------------------------------------- orchestrator
+# Reads every twin's state; is the sole author of predictions and
+# recommendations. Note it has NO read access to raw telemetry — it is
+# supposed to fuse twin state, not re-derive it from sensors.
+user orchestrator
+topic read  datacenter/twin-state/+
+topic write datacenter/predictions/CRAC-01
+topic write datacenter/recommendations/room
+topic write datacenter/status/orchestrator
+
+# ------------------------------------------------------------------ operator
+# A human acknowledging a recommendation. May acknowledge; may not recommend.
+user operator
+topic read  datacenter/recommendations/room
+topic write datacenter/acks/room
+
+# ------------------------------------------------------------------- auditor
+# Write-nothing by design: the audit sink records decisions, so it must not be
+# able to author one. audit/audit_sink.py.
+user auditor
+topic read datacenter/predictions/+
+topic read datacenter/recommendations/+
+topic read datacenter/acks/+
+
+# -------------------------------------------------------------------- viewer
+# The credential the public dashboard ships with. It is embedded in
+# client-side JavaScript and must be assumed public — which is acceptable
+# precisely because it can write nothing at all. Anyone who reads it from the
+# page source gains read access to a simulated data centre.
+user viewer
+topic read datacenter/twin-state/+
+topic read datacenter/predictions/+
+topic read datacenter/recommendations/+
+topic read datacenter/status/+

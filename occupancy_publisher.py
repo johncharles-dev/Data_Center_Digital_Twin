@@ -32,6 +32,8 @@ from datetime import datetime, timezone
 
 import paho.mqtt.client as mqtt
 
+from mqtt_identity import apply_credentials
+
 RACK_IDS = ["SR-RACK-01", "SR-RACK-02", "SR-RACK-03"]
 
 STAFF_TOPIC = "datacenter/occupancy/staff"
@@ -90,9 +92,7 @@ def main():
     client = mqtt.Client(client_id="occupancy-publisher")
     if use_tls:
         client.tls_set()
-    user = os.environ.get("MQTT_USERNAME")
-    if user:
-        client.username_pw_set(user, os.environ.get("MQTT_PASSWORD"))
+    apply_credentials(client, "occupancy-publisher")
     client.connect(args.host, args.port, keepalive=60)
     client.loop_start()
 
