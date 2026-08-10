@@ -11,20 +11,6 @@ import joblib
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "crac_failure_model.joblib")
 
-# The regressor is trained ONLY on rows inside the 240-minute scored
-# window (notebook cell 15: "Restrict to the scored window on both
-# sides of the split"). On a healthy unit it is extrapolating far
-# outside its training support, and it still returns a number: an
-# observed run published time_to_failure_hours = 3.74 while
-# failure_probability was 0.002. A consumer rendering that field would
-# show a failure countdown during normal operation.
-#
-# Below this probability the regressor's output is not evidence of
-# anything, so report null rather than a number nobody should act on.
-# Matches orchestrator.ACTION_THRESHOLD: if the prediction is not
-# actionable, it does not get a countdown either.
-TTF_REPORT_THRESHOLD = 0.5
-
 
 class CRACFailureModel:
     def __init__(self):
@@ -37,18 +23,11 @@ class CRACFailureModel:
             return self._trend_baseline(cooling_state)
 
         features = self._feature_vector(cooling_state)
-        proba = float(self.model["classifier"].predict_proba([features])[0][1])
-
-        # Only run/report the regressor where it has training support.
-        if proba >= TTF_REPORT_THRESHOLD:
-            ttf_min = self.model["regressor"].predict([features])[0]  # minutes, not hours
-            ttf_hours = round(float(ttf_min) / 60.0, 2)
-        else:
-            ttf_hours = None
-
+        proba = self.model["classifier"].predict_proba([features])[0][1]
+        ttf_min = self.model["regressor"].predict([features])[0]  # trained on minutes, not hours
         return {
-            "failure_probability": round(proba, 3),
-            "time_to_failure_hours": ttf_hours,
+            "failure_probability": round(float(proba), 3),
+            "time_to_failure_hours": round(float(ttf_min) / 60.0, 2),
             "contributing_factors": cooling_state.get("threshold_flags", []),
         }
 

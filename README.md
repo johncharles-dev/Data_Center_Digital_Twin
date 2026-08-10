@@ -44,38 +44,6 @@ export MQTT_PASSWORD=...
 python main.py
 ```
 
-Three processes make a complete run — `main.py` is only the consumer side:
-
-```bash
-python main.py                                    # twins + orchestrator
-python sensor_simulator.py --interval 0.05 --anomaly   # racks + CRAC-01
-python occupancy_publisher.py --interval 0.05          # staff + workload
-```
-
-`occupancy_publisher.py` is what feeds `datacenter/occupancy/staff` and
-`/workload`. Without it OccupancyTwin never receives anything,
-`load_factor` stays at its default of 0, and the orchestrator cannot
-tell load-driven heat from an equipment fault.
-
-### Playback speed vs. the degradation
-
-The fault takes 8 simulated hours and each publish tick advances the
-simulated clock by at most 30s — the interval the failure model was
-trained at. Watch it faster by publishing more often (`--interval`),
-never by making the fault steeper: the model's two trend features are
-rates, and steepening the fault pushes them outside the range the model
-was fitted on. `tests/test_substep_cap.py` asserts both properties.
-
-## Tests
-
-```bash
-python3 tests/test_slope_units.py         # live slopes == training units
-python3 tests/test_substep_cap.py         # sub-stepping + speed invariance
-python3 tests/test_load_driven_branch.py  # load-vs-fault branch reachable
-python3 tests/training_feature_range.py   # training slope distribution
-python3 tests/analyse_live_run.py CAPTURE # verify a recorded live run
-```
-
 Verified end-to-end against a real local broker: twins publish
 correctly-shaped state to `datacenter/twin-state/*`, orchestrator fuses
 it and publishes to `datacenter/predictions/CRAC-01` and
