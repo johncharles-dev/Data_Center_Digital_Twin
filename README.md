@@ -93,9 +93,78 @@ never by making the fault steeper: the model's two trend features are
 rates, and steepening the fault pushes them outside the range the model
 was fitted on. `tests/test_substep_cap.py` asserts both properties.
 
+## CRAC energy model
+
+`twins/energy_twin.py` computes CRAC electrical draw from telemetry the
+system already publishes. Every coefficient below is derived, not fitted —
+there is no measured CRAC to fit against, so the alternative to a stated
+derivation is a guess, and the ROI case cannot rest on one.
+
+**Fan — affinity law on measured shaft speed**
+
+```
+P_fan = P_FAN_RATED × (fan_rpm / 3200)³
+```
+
+| Coefficient | Value | Basis |
+|---|---|---|
+| `FAN_RPM_RATED` | 3200 rpm | nominal duty point, `CRAC_BASE["fan_rpm"]` |
+| `NOMINAL_AIRFLOW_M3_S` | 1.6045 m³/s | 3400 CFM nominal, `CRAC_BASE["airflow_cfm"]` |
+| `FAN_TOTAL_PRESSURE_PA` | 500 Pa | downflow CRAC into a raised-floor plenum: ~150–250 Pa external static plus coil, filter and plenum losses |
+| `FAN_COMBINED_EFFICIENCY` | 0.55 | belt-driven centrifugal, fan × motor × drive |
+| **`P_FAN_RATED_KW`** | **1.459 kW** | `Q·Δp/η = 1.6045 × 500 / 0.55 = 1459 W` |
+
+The cube law is why a degrading unit is expensive before it fails: over this
+system's own fault profile the fan runs 3200 → 3450 rpm, a **7.8% speed rise
+that becomes a 25% power rise**.
+
+**Compressor — linear in reported load fraction**
+
+```
+P_comp = P_COMP_RATED × compressor_load_pct / 100
+```
+
+| Coefficient | Value | Basis |
+|---|---|---|
+| `RATED_COOLING_KW` | 30 kW sensible | sized ~1.3× the ~23 kW peak IT load this room reaches |
+| `RATED_COP` | 3.0 | mid-range DX CRAC sensible COP at design conditions; high-efficiency units reach 3.5+ |
+| **`P_COMP_RATED_KW`** | **10.0 kW** | `30 / 3.0` |
+
+Linear because the modelled unit is a **fixed-speed scroll compressor that
+cycles** to meet part load: mean power over a cycle is proportional to
+run-time fraction, which is what `compressor_load_pct` reports.
+
+**What it produces**
+
+| State | fan rpm | comp % | fan kW | comp kW | CRAC kW | IT kW | PUE |
+|---|---|---|---|---|---|---|---|
+| healthy baseline | 3200 | 55 | 1.46 | 5.50 | 6.96 | 18.6 | **1.37** |
+| mid-degradation | 3330 | 70 | 1.64 | 7.00 | 8.64 | 21.0 | **1.41** |
+| tripped / plateau | 3450 | 85 | 1.83 | 8.50 | 10.33 | 23.4 | **1.44** |
+
+A degraded CRAC draws **3.37 kW more** than a healthy one — SGD 14.55/day at
+0.18 SGD/kWh. That difference is the quantity the ROI case is built on.
+
+**Limitations, stated plainly**
+
+- A **variable-speed (inverter) compressor** follows a markedly non-linear
+  power curve. This model would misstate such a unit; it describes a cycling
+  fixed-speed one.
+- COP is **fixed**. A real unit's COP falls as condenser temperature rises,
+  so this understates power on hot days.
+- An **EC plug fan** would reach ~0.65 combined efficiency, making this
+  overstate fan power by roughly 15%.
+- Nothing here is validated against a physical CRAC. The coefficients are
+  defensible engineering estimates with stated provenance, not measurements.
+
+This replaced `compressor_load_pct * 0.05`, which put CRAC draw at ~2.9 kW
+against ~18.6 kW of IT load (PUE 1.16 — not credible for a room cooled this
+way) and ignored fan power entirely, so degradation appeared to cost nothing.
+
 ## Tests
 
 ```bash
+python3 tests/test_energy_model.py        # CRAC power model + PUE bounds
 python3 tests/test_slope_units.py         # live slopes == training units
 python3 tests/test_substep_cap.py         # sub-stepping + speed invariance
 python3 tests/test_load_driven_branch.py  # load-vs-fault branch reachable
