@@ -45,6 +45,15 @@ Usage:
   python sensor_simulator.py --anomaly       # start, then auto-trigger anomaly after 20s
   python sensor_simulator.py --csv           # also append every reading to room_data.csv/.json
   python sensor_simulator.py --host broker.hivemq.com   # use public broker fallback
+
+Simulated clock:
+  The degradation takes ANOMALY_DURATION_S of SIMULATED time (8h) and each
+  publish tick advances that clock by at most SIM_SAMPLE_INTERVAL_S (30s,
+  the interval the failure model was trained at). To watch it faster,
+  publish more often -- do NOT make the fault steeper:
+
+  python sensor_simulator.py --interval 0.02 --anomaly   # 1500x, 8h in ~19s
+  python sensor_simulator.py --interval 1.0  --anomaly   # 30x,   8h in ~16min
 """
 
 import argparse
@@ -133,14 +142,13 @@ CRAC_ANOMALY_RAMP_FRACTION = 0.32     # reaches full plateau at 32% of the
                                        # lead time than reacting to rack
                                        # symptoms alone
 
-# Anomaly tuning. The dashboard fires its predictive alert when inlet temp
-# rises with slope >= 0.2 C/min toward INLET_CRITICAL = 30 C. We ramp inlet
-# by ~0.06 C per second = ~3.6 C/min, comfortably above the trigger, so the
-# warning appears well before inlet actually reaches 30 C.
-ANOMALY_INLET_RAMP_PER_SEC = 0.06
+# Anomaly tuning. The rack ramp is driven by fractional progress through
+# ANOMALY_DURATION_S (below), not by a per-wall-second rate:
+# ANOMALY_INLET_RAMP_PER_SEC (0.06 C/s) and ANOMALY_POWER_CREEP
+# (0.02 kW/s) used to live here and both hit their cap at ~110s, which is
+# what compressed an hours-long fault into under two minutes.
 ANOMALY_EXHAUST_COUPLING   = 1.3   # exhaust rises faster than inlet
 ANOMALY_FAN_COMPENSATION   = 90    # RPM added per degree of inlet rise
-ANOMALY_POWER_CREEP        = 0.02  # kW per second
 
 # Plateau caps: residual / backup cooling stabilises the room at an elevated but
 # physically-believable ceiling instead of the ramp running away unbounded.
@@ -152,15 +160,61 @@ ANOMALY_MAX_POWER_RISE = 2.2   # kW of extra draw the fault tops out at (-> ~8.0
 
 
 # ---------------------------------------------------------------------------
+# Simulated clock
+# ---------------------------------------------------------------------------
+#
+# The degradation is defined in SIMULATED seconds, not wall-clock seconds.
+#
+# Why: the CRAC failure model's two engineered features
+# (motor_temp_slope_10min, filter_dp_slope_10min) were trained on runs
+# that degrade over 2-14 hours sampled every 30s. The previous version of
+# this file ramped the same fault to completion in ~35 wall-clock seconds,
+# which made those live slopes ~90x larger than anything in the training
+# set — so the model saw inputs it had never been fitted on and simply
+# saturated.
+#
+# The fix is to separate two things that were conflated:
+#
+#   * how long the degradation TAKES        -> ANOMALY_DURATION_S (fixed)
+#   * how fast you WATCH it                 -> --sim-step / --interval
+#
+# Each publish tick advances the simulated clock by at most one training
+# sample interval, so no matter how fast the demo is played back the
+# telemetry is never sampled more coarsely than the model was trained on.
+# Watching it faster is done by publishing more often (--interval), not by
+# making the fault itself steeper.
+
+SIM_SAMPLE_INTERVAL_S = 30.0   # dataset/generate_dataset.py SAMPLE_INTERVAL_S
+ANOMALY_DURATION_S    = 8 * 3600.0   # 8h — the training set's median TTF
+
+# Baseline sine periods, in simulated seconds. These used to be ~20s,
+# which aliases badly once a tick can advance 30 simulated seconds.
+SWING_PERIOD_S      = 7200.0   # 2h, racks
+CRAC_SWING_PERIOD_S = 9000.0   # 2.5h, CRAC (deliberately not in phase)
+
+
+# ---------------------------------------------------------------------------
 # Simulation state
 # ---------------------------------------------------------------------------
 
 class Simulator:
     def __init__(self, args):
         self.args = args
-        self.t = 0.0
+        self.t = 0.0                 # SIMULATED seconds since start
         self.anomaly_active = False
-        self.anomaly_elapsed = 0.0
+        self.anomaly_elapsed = 0.0   # SIMULATED seconds since the fault began
+
+        # Simulated seconds advanced per publish tick, hard-capped at one
+        # training sample interval so the stream is never coarser than the
+        # data the model was fitted on. Raising --sim-step past the cap is
+        # silently clamped rather than honoured: honouring it is precisely
+        # the bug this guard exists to prevent.
+        self.sim_step = min(float(getattr(args, "sim_step", SIM_SAMPLE_INTERVAL_S)),
+                            SIM_SAMPLE_INTERVAL_S)
+        self.wall_interval = float(getattr(args, "interval", PUBLISH_INTERVAL))
+        # Timestamps advance on the simulated clock, anchored to the real
+        # time the process started so they still look like "now".
+        self.sim_epoch = time.time()
         self.running = True
         self.client = None
         self.csv_file = None
@@ -199,7 +253,7 @@ class Simulator:
     def _reading_for_rack(self, rack, phase):
         """Produce one physically-plausible reading for a rack."""
         # Gentle sine swing so the baseline isn't flat, plus small noise.
-        swing = math.sin(self.t / 20.0 + phase)
+        swing = math.sin(2 * math.pi * self.t / SWING_PERIOD_S + phase)
 
         # Occasional independent compute spike raises power (and heat/fan).
         # Suppressed during the anomaly so the demo climb stays clean/monotonic.
@@ -222,10 +276,14 @@ class Simulator:
         if self.anomaly_active:
             # Clamp the rise so temps stabilise at a believable plateau instead
             # of climbing forever (backup cooling holding the line).
-            rise = min(ANOMALY_INLET_RAMP_PER_SEC * self.anomaly_elapsed,
-                       ANOMALY_MAX_RISE)
-            power_rise = min(ANOMALY_POWER_CREEP * self.anomaly_elapsed,
-                             ANOMALY_MAX_POWER_RISE)
+            # Progress through the fault, in simulated time. Both the
+            # original per-second rates reached their cap at ~110s of the
+            # old wall-clock ramp, so a single shared progress term
+            # preserves the original shape while stretching it over the
+            # physically-plausible ANOMALY_DURATION_S.
+            progress = min(1.0, self.anomaly_elapsed / ANOMALY_DURATION_S)
+            rise = ANOMALY_MAX_RISE * progress
+            power_rise = ANOMALY_MAX_POWER_RISE * progress
             # During the anomaly, damp the random swing/noise so the upward
             # ramp is smooth and status climbs NORMAL -> WARNING -> CRITICAL
             # cleanly rather than flickering on noise.
@@ -260,7 +318,7 @@ class Simulator:
         """Produce one physically-plausible CRAC-01 reading. Shares the same
         anomaly_active / anomaly_elapsed state as the rack ramp, so the two
         streams tell one consistent degradation story."""
-        swing = math.sin(self.t / 25.0 + 1.0)  # different phase from racks
+        swing = math.sin(2 * math.pi * self.t / CRAC_SWING_PERIOD_S + 1.0)
 
         motor_temp = CRAC_BASE["fan_motor_temp_c"] + 1.5 * swing + random.uniform(-0.4, 0.4)
         filter_dp = CRAC_BASE["filter_dp_pa"] + 4.0 * swing + random.uniform(-3.0, 3.0)
@@ -275,8 +333,8 @@ class Simulator:
             # plateau sooner (CRAC_ANOMALY_RAMP_FRACTION), matching the
             # plan's claim that CRAC telemetry gives earlier lead time than
             # the rack symptoms it's driving.
-            crac_full_ramp_at = ANOMALY_MAX_RISE / ANOMALY_INLET_RAMP_PER_SEC
-            progress = min(1.0, self.anomaly_elapsed / (crac_full_ramp_at * CRAC_ANOMALY_RAMP_FRACTION))
+            progress = min(1.0, self.anomaly_elapsed
+                           / (ANOMALY_DURATION_S * CRAC_ANOMALY_RAMP_FRACTION))
 
             motor_temp = CRAC_BASE["fan_motor_temp_c"] + CRAC_ANOMALY_MOTOR_TEMP_RISE * progress \
                          + random.uniform(-0.3, 0.3)
@@ -317,10 +375,20 @@ class Simulator:
             flags.append("airflow_loss")
         return flags
 
+    def _sim_timestamp(self):
+        """ISO-8601 stamp on the SIMULATED clock.
+
+        Consumers that compute rates (CoolingTwin's slope features) must
+        divide by this, not by wall clock — otherwise an accelerated
+        playback inflates every rate by the acceleration factor.
+        """
+        return datetime.fromtimestamp(
+            self.sim_epoch + self.t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     def _crac_message(self):
         vals = self._crac_reading()
         return {
-            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "timestamp": self._sim_timestamp(),
             "unit_id": CRAC_UNIT_ID,
             **vals,
             "threshold_flags": self._crac_threshold_flags(vals),
@@ -329,7 +397,7 @@ class Simulator:
     def _message(self, rack, phase):
         vals = self._reading_for_rack(rack, phase)
         msg = {
-            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "timestamp": self._sim_timestamp(),
             "rack_id": rack["rack_id"],
             "location": rack["location"],
             **vals,
@@ -365,9 +433,16 @@ class Simulator:
 
     def run(self):
         # optional auto-trigger for --anomaly
-        auto_at = 20.0 if self.args.anomaly else None
+        # In SIMULATED seconds. 600s == one full slope window, so the
+        # CoolingTwin's buffer is already populated when the fault starts.
+        auto_at = 600.0 if self.args.anomaly else None
 
-        print(f"Publishing to {TOPIC_BASE}/<rack>  every {PUBLISH_INTERVAL}s")
+        accel = self.sim_step / self.wall_interval if self.wall_interval else float("inf")
+        print(f"Publishing to {TOPIC_BASE}/<rack>  every {self.wall_interval}s wall")
+        print(f"Simulated clock: +{self.sim_step}s per tick "
+              f"(cap {SIM_SAMPLE_INTERVAL_S}s) -> {accel:.0f}x acceleration")
+        print(f"Fault duration:  {ANOMALY_DURATION_S / 3600:.1f}h simulated "
+              f"= {ANOMALY_DURATION_S / accel / 60:.1f} min wall\n")
         print("Commands:  a<Enter> = trigger anomaly   q<Enter> = quit\n")
 
         while self.running:
@@ -393,10 +468,12 @@ class Simulator:
                   f"vib={crac_msg['fan_vibration_mm_s']:4.2f}mm/s  "
                   f"[{crac_flag_str}]")
 
-            time.sleep(PUBLISH_INTERVAL)
-            self.t += PUBLISH_INTERVAL
+            time.sleep(self.wall_interval)
+            # One tick advances the simulated clock by at most one training
+            # sample interval — this is the sub-stepping guarantee.
+            self.t += self.sim_step
             if self.anomaly_active:
-                self.anomaly_elapsed += PUBLISH_INTERVAL
+                self.anomaly_elapsed += self.sim_step
 
             if auto_at is not None and self.t >= auto_at and not self.anomaly_active:
                 self.trigger_anomaly()
@@ -505,6 +582,14 @@ def main():
     ap = argparse.ArgumentParser(description="Data center twin telemetry simulator")
     ap.add_argument("--host", default="localhost", help="MQTT broker host")
     ap.add_argument("--port", type=int, default=1883, help="MQTT broker port")
+    ap.add_argument("--sim-step", type=float, default=SIM_SAMPLE_INTERVAL_S,
+                    dest="sim_step",
+                    help=f"simulated seconds advanced per publish tick "
+                         f"(clamped to {SIM_SAMPLE_INTERVAL_S}s, the training "
+                         f"sample interval)")
+    ap.add_argument("--interval", type=float, default=PUBLISH_INTERVAL,
+                    help="wall-clock seconds between publish ticks; lower this "
+                         "to watch the same degradation faster")
     ap.add_argument("--anomaly", action="store_true",
                     help="auto-trigger the CRAC anomaly 20s after start")
     ap.add_argument("--csv", action="store_true",
