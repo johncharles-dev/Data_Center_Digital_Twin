@@ -108,6 +108,17 @@ class Orchestrator:
         )
 
     def _on_connect(self, client, userdata, flags, rc):
+        # See twins/base_twin.py: a refused credential arrives here, not from
+        # connect(). Subscribing past it produces an orchestrator that emits no
+        # predictions and reports no error.
+        if rc != 0:
+            print(f"[orchestrator] BROKER REFUSED THE CONNECTION: rc={rc} "
+                  f"({mqtt.connack_string(rc)})")
+            print("[orchestrator] no predictions or recommendations will be "
+                  "published. Check MQTT_USERNAME_ORCHESTRATOR / "
+                  "MQTT_PASSWORD_ORCHESTRATOR, or run ./run.sh.")
+            return
+
         client.subscribe("datacenter/twin-state/+")
         client.publish(self.status_topic, "online", qos=1, retain=True)
 

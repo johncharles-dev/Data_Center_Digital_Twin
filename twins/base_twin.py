@@ -22,7 +22,7 @@ import time
 import paho.mqtt.client as mqtt
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from mqtt_identity import apply_credentials
+from mqtt_identity import apply_credentials, env_key
 
 CONNECT_RETRY_DELAY_S = 5
 CONNECT_MAX_RETRIES = 12  # ~1 minute of retrying before giving up
@@ -93,6 +93,20 @@ class BaseTwin:
         raise NotImplementedError
 
     def _on_connect(self, client, userdata, flags, rc):
+        # connect() only opens the socket; the broker's verdict arrives here.
+        # Without this check a refused credential still reached the lines
+        # below, so the twin subscribed and published into a connection the
+        # broker had already closed — no output, no error, a process that
+        # looks healthy and does nothing. Fail loudly instead.
+        if rc != 0:
+            key = env_key(f"twin-{self.twin_id}")
+            print(f"[{self.twin_id}] BROKER REFUSED THE CONNECTION: rc={rc} "
+                  f"({mqtt.connack_string(rc)})")
+            print(f"[{self.twin_id}] this twin will publish nothing. Check "
+                  f"MQTT_USERNAME_{key} / MQTT_PASSWORD_{key}, or run ./run.sh "
+                  f"which exports them from mosquitto/credentials.json.")
+            return
+
         for topic in self.subscriptions():
             client.subscribe(topic)
         client.publish(self.status_topic, "online", qos=1, retain=True)
