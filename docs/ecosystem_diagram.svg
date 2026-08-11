@@ -1,0 +1,156 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 956" width="1400" height="956" font-family="Calibri, Arial, sans-serif">
+  <defs>
+    <marker id="ar" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+      <polygon points="0 0, 9 3.5, 0 7" fill="#5A6B77"/>
+    </marker>
+    <marker id="arA" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <polygon points="0 0, 10 4, 0 8" fill="#D97706"/>
+    </marker>
+  </defs>
+
+  <rect width="1400" height="956" fill="#FFFFFF"/>
+
+  <!-- title -->
+  <text x="40" y="46" font-size="26" font-weight="bold" fill="#0A2540">Integrated Ecosystem Architecture</text>
+  <text x="40" y="72" font-size="15" fill="#5A6B77">Six digital twins coordinated centrally over MQTT · Data Center Server Room · SR-RACK-01/02/03 + CRAC-01</text>
+
+  <!-- ══ physical assets ══ -->
+  <text x="40" y="118" font-size="12" font-weight="bold" fill="#1C7293" letter-spacing="1.6">PHYSICAL ASSETS  (simulated)</text>
+  <rect x="40" y="130" width="245" height="56" rx="7" fill="#F2F6F8" stroke="#C6D4DC"/>
+  <text x="162" y="154" font-size="14" font-weight="bold" fill="#17252E" text-anchor="middle">SR-RACK-01 / 02 / 03</text>
+  <text x="162" y="174" font-size="11.5" fill="#5A6B77" text-anchor="middle">inlet · exhaust · fan · power</text>
+
+  <rect x="307" y="130" width="245" height="56" rx="7" fill="#F2F6F8" stroke="#C6D4DC"/>
+  <text x="429" y="154" font-size="14" font-weight="bold" fill="#17252E" text-anchor="middle">Room occupancy</text>
+  <text x="429" y="174" font-size="11.5" fill="#5A6B77" text-anchor="middle">staff presence · compute load</text>
+
+  <rect x="574" y="130" width="245" height="56" rx="7" fill="#F2F6F8" stroke="#C6D4DC"/>
+  <text x="696" y="154" font-size="14" font-weight="bold" fill="#17252E" text-anchor="middle">CRAC-01</text>
+  <text x="696" y="174" font-size="11.5" fill="#5A6B77" text-anchor="middle">motor · vibration · filter ΔP · airflow</text>
+
+  <line x1="162" y1="186" x2="162" y2="214" stroke="#5A6B77" stroke-width="1.6" marker-end="url(#ar)"/>
+  <line x1="429" y1="186" x2="429" y2="214" stroke="#5A6B77" stroke-width="1.6" marker-end="url(#ar)"/>
+  <line x1="696" y1="186" x2="696" y2="214" stroke="#5A6B77" stroke-width="1.6" marker-end="url(#ar)"/>
+
+  <!-- telemetry bus -->
+  <rect x="40" y="220" width="780" height="52" rx="7" fill="#0A2540"/>
+  <text x="58" y="242" font-size="11.5" font-weight="bold" fill="#3FA7B8" letter-spacing="1.4">TELEMETRY  ·  MQTT / Mosquitto</text>
+  <text x="58" y="261" font-size="11.5" font-family="Consolas, monospace" fill="#D6E6EE">datacenter/racks/&lt;RACK_ID&gt;  ·  datacenter/racks/CRAC-01  ·  datacenter/occupancy/{staff,workload}</text>
+
+  <line x1="127" y1="290" x2="127" y2="306" stroke="#5A6B77" stroke-width="1.6" marker-end="url(#ar)"/>
+  <line x1="328" y1="290" x2="328" y2="306" stroke="#5A6B77" stroke-width="1.6" marker-end="url(#ar)"/>
+  <line x1="529" y1="290" x2="529" y2="306" stroke="#5A6B77" stroke-width="1.6" marker-end="url(#ar)"/>
+  <line x1="730" y1="290" x2="730" y2="306" stroke="#5A6B77" stroke-width="1.6" marker-end="url(#ar)"/>
+
+  <!-- ══ twins — ordered so cross-twin flows are adjacent ══ -->
+  <text x="40" y="284" font-size="12" font-weight="bold" fill="#1C7293" letter-spacing="1.6">SUB-TWINS</text>
+
+  <rect x="40" y="312" width="175" height="96" rx="7" fill="#FFFFFF" stroke="#1C7293" stroke-width="1.8"/>
+  <text x="127" y="335" font-size="13.5" font-weight="bold" fill="#0A2540" text-anchor="middle">Rack Twin ×3</text>
+  <text x="127" y="357" font-size="11" fill="#17252E" text-anchor="middle">thermal state, ΔT,</text>
+  <text x="127" y="374" font-size="11" fill="#17252E" text-anchor="middle">exhaust slope,</text>
+  <text x="127" y="391" font-size="11" fill="#17252E" text-anchor="middle">power draw</text>
+
+  <rect x="241" y="312" width="175" height="96" rx="7" fill="#FFFFFF" stroke="#1C7293" stroke-width="1.8"/>
+  <text x="328" y="335" font-size="13.5" font-weight="bold" fill="#0A2540" text-anchor="middle">Occupancy Twin</text>
+  <text x="328" y="357" font-size="11" fill="#17252E" text-anchor="middle">staff presence,</text>
+  <text x="328" y="374" font-size="11" fill="#17252E" text-anchor="middle">per-rack utilisation,</text>
+  <text x="328" y="391" font-size="11" fill="#17252E" text-anchor="middle">load factor</text>
+
+  <rect x="442" y="312" width="175" height="96" rx="7" fill="#FFFFFF" stroke="#1C7293" stroke-width="1.8"/>
+  <text x="529" y="335" font-size="13.5" font-weight="bold" fill="#0A2540" text-anchor="middle">Energy Twin</text>
+  <text x="529" y="357" font-size="11" fill="#17252E" text-anchor="middle">IT + CRAC power,</text>
+  <text x="529" y="374" font-size="11" fill="#17252E" text-anchor="middle">room total, PUE,</text>
+  <text x="529" y="391" font-size="11" fill="#17252E" text-anchor="middle">compressor + fan split</text>
+
+  <rect x="643" y="312" width="175" height="96" rx="7" fill="#FFFFFF" stroke="#1C7293" stroke-width="1.8"/>
+  <text x="730" y="335" font-size="13.5" font-weight="bold" fill="#0A2540" text-anchor="middle">Cooling Twin</text>
+  <text x="730" y="357" font-size="11" fill="#17252E" text-anchor="middle">CRAC health,</text>
+  <text x="730" y="374" font-size="11" fill="#17252E" text-anchor="middle">10-min trend slopes,</text>
+  <text x="730" y="391" font-size="11" fill="#17252E" text-anchor="middle">threshold flags</text>
+
+  <text x="328" y="429" font-size="11.5" font-style="italic" fill="#5A6B77" text-anchor="middle">load factor reaches the decision via the orchestrator, not via the other twins</text>
+
+  <line x1="127" y1="438" x2="127" y2="474" stroke="#5A6B77" stroke-width="1.6" marker-end="url(#ar)"/>
+  <line x1="328" y1="438" x2="328" y2="474" stroke="#5A6B77" stroke-width="1.6" marker-end="url(#ar)"/>
+  <line x1="529" y1="438" x2="529" y2="474" stroke="#5A6B77" stroke-width="1.6" marker-end="url(#ar)"/>
+  <line x1="730" y1="438" x2="730" y2="474" stroke="#5A6B77" stroke-width="1.6" marker-end="url(#ar)"/>
+
+  <!-- twin-state bus -->
+  <rect x="40" y="480" width="780" height="46" rx="7" fill="#0A2540"/>
+  <text x="58" y="500" font-size="11.5" font-weight="bold" fill="#3FA7B8" letter-spacing="1.4">TWIN STATE  ·  retained, QoS 1</text>
+  <text x="58" y="518" font-size="11.5" font-family="Consolas, monospace" fill="#D6E6EE">datacenter/twin-state/{rack-SR-RACK-01|02|03, occupancy, energy, cooling}</text>
+
+  <line x1="430" y1="526" x2="430" y2="562" stroke="#5A6B77" stroke-width="1.6" marker-end="url(#ar)"/>
+
+  <!-- orchestrator -->
+  <text x="40" y="556" font-size="12" font-weight="bold" fill="#1C7293" letter-spacing="1.6">CENTRAL ORCHESTRATOR</text>
+  <rect x="40" y="568" width="780" height="150" rx="8" fill="#0A2540"/>
+  <text x="62" y="596" font-size="16" font-weight="bold" fill="#FFFFFF">Coordination · Prediction · Decision</text>
+
+  <rect x="62" y="610" width="240" height="90" rx="6" fill="#13314A"/>
+  <text x="182" y="632" font-size="12.5" font-weight="bold" fill="#3FA7B8" text-anchor="middle">Predictive model</text>
+  <text x="182" y="652" font-size="11" fill="#D6E6EE" text-anchor="middle">11 features → failure probability,</text>
+  <text x="182" y="668" font-size="11" fill="#D6E6EE" text-anchor="middle">time-to-failure above threshold,</text>
+  <text x="182" y="684" font-size="11" fill="#D6E6EE" text-anchor="middle">likely mechanism from tripped limits</text>
+
+  <rect x="318" y="610" width="240" height="90" rx="6" fill="#13314A"/>
+  <text x="438" y="632" font-size="12.5" font-weight="bold" fill="#3FA7B8" text-anchor="middle">Load-vs-fault gate</text>
+  <text x="438" y="652" font-size="11" fill="#D6E6EE" text-anchor="middle">suppresses alerts explained</text>
+  <text x="438" y="668" font-size="11" fill="#D6E6EE" text-anchor="middle">by high occupancy with no</text>
+  <text x="438" y="684" font-size="11" fill="#D6E6EE" text-anchor="middle">equipment threshold tripped</text>
+
+  <rect x="574" y="610" width="224" height="90" rx="6" fill="#13314A"/>
+  <text x="686" y="632" font-size="12.5" font-weight="bold" fill="#3FA7B8" text-anchor="middle">Recommendation rules</text>
+  <text x="686" y="652" font-size="11" fill="#D6E6EE" text-anchor="middle">proportionate action,</text>
+  <text x="686" y="668" font-size="11" fill="#D6E6EE" text-anchor="middle">rationale —</text>
+  <text x="686" y="684" font-size="11" fill="#D6E6EE" text-anchor="middle">advisory, never actuating</text>
+
+  <line x1="430" y1="718" x2="430" y2="752" stroke="#5A6B77" stroke-width="1.6" marker-end="url(#ar)"/>
+
+  <rect x="40" y="758" width="780" height="46" rx="7" fill="#0A2540"/>
+  <text x="58" y="778" font-size="11.5" font-weight="bold" fill="#3FA7B8" letter-spacing="1.4">DECISION OUTPUT</text>
+  <text x="58" y="796" font-size="11.5" font-family="Consolas, monospace" fill="#D6E6EE">datacenter/predictions/CRAC-01   ·   datacenter/recommendations/room</text>
+
+  <line x1="430" y1="804" x2="430" y2="838" stroke="#5A6B77" stroke-width="1.6" marker-end="url(#ar)"/>
+
+  <rect x="40" y="844" width="780" height="64" rx="7" fill="#F2F6F8" stroke="#C6D4DC"/>
+  <text x="430" y="869" font-size="14.5" font-weight="bold" fill="#0A2540" text-anchor="middle">Dashboard · Operator</text>
+  <text x="430" y="892" font-size="11.5" fill="#5A6B77" text-anchor="middle">live state · failure probability · countdown · tripped sensor limits · action requiring approval</text>
+
+  <!-- ══ strategy panel ══ -->
+  <rect x="850" y="312" width="510" height="412" rx="8" fill="#F2F6F8" stroke="#1C7293" stroke-width="1.8"/>
+  <text x="874" y="342" font-size="15.5" font-weight="bold" fill="#0A2540">Coordination strategy: CENTRALIZED</text>
+
+  <text x="874" y="372" font-size="12.5" font-weight="bold" fill="#1C7293">Why centralized here</text>
+  <text x="874" y="393" font-size="12" fill="#17252E">All six twins observe one shared thermal zone. Any</text>
+  <text x="874" y="411" font-size="12" fill="#17252E">action — raising cooling, shifting workload, replacing</text>
+  <text x="874" y="429" font-size="12" fill="#17252E">a filter — changes conditions for every other asset.</text>
+  <text x="874" y="453" font-size="12" fill="#17252E">Federated twins would each have to rediscover an</text>
+  <text x="874" y="471" font-size="12" fill="#17252E">environment none of them can observe alone.</text>
+  <text x="874" y="495" font-size="12" fill="#17252E">A single decision point also keeps the path from</text>
+  <text x="874" y="513" font-size="12" fill="#17252E">telemetry to recommendation auditable, which the</text>
+  <text x="874" y="531" font-size="12" fill="#17252E">governance requirement depends on.</text>
+
+  <line x1="874" y1="549" x2="1336" y2="549" stroke="#C6D4DC" stroke-width="1"/>
+
+  <text x="874" y="575" font-size="12.5" font-weight="bold" fill="#1C7293">When federation becomes correct</text>
+  <text x="874" y="596" font-size="12" fill="#17252E">Across administrative or network boundaries, where</text>
+  <text x="874" y="614" font-size="12" fill="#17252E">data residency prevents pooling raw telemetry, or</text>
+  <text x="874" y="632" font-size="12" fill="#17252E">once central state becomes a scaling bottleneck.</text>
+  <text x="874" y="656" font-size="12" fill="#17252E">None applies to a single room — federation is deferred</text>
+  <text x="874" y="674" font-size="12" fill="#17252E">to the multi-room phase, where room-level twins</text>
+  <text x="874" y="692" font-size="12" fill="#17252E">exchange summaries rather than raw telemetry.</text>
+
+  <!-- legend -->
+  <rect x="850" y="758" width="510" height="150" rx="8" fill="#FFFFFF" stroke="#C6D4DC"/>
+  <text x="874" y="786" font-size="12.5" font-weight="bold" fill="#0A2540">Legend</text>
+
+  <line x1="878" y1="808" x2="924" y2="808" stroke="#5A6B77" stroke-width="1.8" marker-end="url(#ar)"/>
+  <text x="936" y="813" font-size="11.5" fill="#17252E">MQTT publish / subscribe</text>
+
+  <rect x="878" y="828" width="34" height="15" rx="3" fill="#0A2540"/>
+  <text x="936" y="840" font-size="11.5" fill="#17252E">Message bus / central decision layer</text>
+
+  <text x="874" y="896" font-size="11" font-style="italic" fill="#5A6B77">All recommendations require operator approval. No component actuates equipment.</text>
+</svg>
