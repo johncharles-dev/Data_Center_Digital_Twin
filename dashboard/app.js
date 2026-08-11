@@ -180,20 +180,43 @@
   }
 
   function renderRecommendation() {
+    var p = state.prediction;
+
     if (recIsCurrent(lastRec)) {
       $("verb").textContent = (lastRec.action || "—").replace(/_/g, " ");
       $("verb").style.color = "var(--ink)";
       $("why").textContent = lastRec.rationale || "";
+      // Labelled explicitly: this is the probability AT THE MOMENT THE ADVICE
+      // WAS ISSUED, which is not the live figure in the risk panel and drifts
+      // away from it while the advice stands.
       var bits = [];
-      if (lastRec.failure_probability != null) bits.push("p=" + lastRec.failure_probability);
+      if (lastRec.failure_probability != null)
+        bits.push("issued at p=" + lastRec.failure_probability);
       if (lastRec.seq != null) bits.push("decision #" + lastRec.seq);
       $("meta").textContent = bits.join(" · ");
-    } else {
-      $("verb").textContent = "Monitor";
-      $("verb").style.color = "var(--dim)";
-      $("why").textContent = "No action required. No current recommendation for this run.";
-      $("meta").textContent = "";
+      return;
     }
+
+    // No current advice. WHY there is none is the useful part.
+    if (p && p.recommendation_withheld === "load_driven") {
+      var pct = p.load_factor != null ? Math.round(p.load_factor * 100) + "%" : "high";
+      $("verb").textContent = "Withheld — load-driven";
+      $("verb").style.color = "var(--warn)";
+      $("why").textContent =
+        "Risk is above the action threshold, but compute load is " + pct +
+        " with no equipment limit breached. The heat is attributed to the " +
+        "workload rather than to the CRAC, so no action is recommended.";
+      $("meta").textContent = "live p=" + (p.failure_probability != null
+        ? p.failure_probability : "—") + " · suppressed by the load-vs-fault rule";
+      return;
+    }
+
+    $("verb").textContent = "Monitor";
+    $("verb").style.color = "var(--dim)";
+    $("why").textContent = (p && p.failure_probability >= ACTION)
+      ? "Risk is above the action threshold; awaiting the next decision."
+      : "No action required. Polling at normal cadence.";
+    $("meta").textContent = "";
   }
 
   /* ---------------------------------------------------------------- paint */
@@ -240,7 +263,14 @@
       // predicted_mode is rule-derived from the sensor flags, not a model
       // output — the artefact has no mode classifier. Say so on the chip.
       var chip = $("modeChip");
-      if (p.predicted_mode && p.predicted_mode !== "NONE") {
+      if (p.predicted_mode === "WARNING_ONLY") {
+        // Not a mechanism, and labelling it "failure mode WARNING_ONLY ·
+        // rule-derived" contradicted itself: no rule matched, which is
+        // precisely what makes this state interesting. Say what is true —
+        // the model has warned and nothing has yet identified the mechanism.
+        chip.textContent = "mechanism not yet identified · model warning only";
+        chip.style.display = "";
+      } else if (p.predicted_mode && p.predicted_mode !== "NONE") {
         chip.textContent = "failure mode · " + p.predicted_mode +
                            (p.predicted_mode_basis === "rule" ? " · rule-derived" : "");
         chip.style.display = "";

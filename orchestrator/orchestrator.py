@@ -145,12 +145,26 @@ class Orchestrator:
             return  # nothing to predict on yet
 
         prediction = self.model.predict(cooling)
-        self._publish_prediction(prediction)
 
         # distinguish load-driven heat from genuine fault
         load_factor = self.twin_state.get("occupancy", {}).get("load_factor", 0)
+        probability = prediction["failure_probability"]
 
-        if should_recommend(prediction["failure_probability"], load_factor, cooling):
+        # DECIDING NOT TO ACT IS A DECISION, and it used to leave no trace:
+        # the orchestrator simply published nothing, so a subscriber could not
+        # tell "risk is low" apart from "risk is high but attributed to compute
+        # load". Two thirds of the warning phase is suppressed this way, which
+        # made the recommendation panel look broken and hid the suppression
+        # from the audit trail. Say it on the wire instead.
+        withheld = None
+        if probability >= ACTION_THRESHOLD and is_load_driven(load_factor, cooling):
+            withheld = "load_driven"
+        prediction["recommendation_withheld"] = withheld
+        prediction["load_factor"] = load_factor
+
+        self._publish_prediction(prediction)
+
+        if should_recommend(probability, load_factor, cooling):
             action = recommend_action(prediction, cooling, self.twin_state.get("energy", {}))
             self._publish_recommendation(action)
 
