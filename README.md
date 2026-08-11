@@ -3,11 +3,31 @@
 Scope per plan section 11.1: model training and evaluation, twin state
 objects, orchestrator, recommendation engine, inference service.
 
-**No HTML anywhere in this bundle — the dashboard is S3's deliverable,
-not S2's, and is intentionally excluded.** `sensor_simulator.py` is
-included only because S2's twins/orchestrator need something publishing
-telemetry to actually run and be tested against — it's S1's file, not
-S2's, but S2 can't demo without it.
+`sensor_simulator.py` is included because the twins and orchestrator need
+something publishing telemetry to run and be tested against.
+
+## Quick start
+
+One command, from a clean clone. Needs Docker and Python 3.11+.
+
+```bash
+./run.sh                 # broker + twins + orchestrator + telemetry + audit
+./run.sh --interval 0.5  # slower playback (default 0.05)
+./run.sh --once          # one degradation instead of looping
+./run.sh --stop          # stop the broker
+```
+
+`run.sh` generates the broker credentials — they are deliberately absent from
+git, so a fresh clone carries none and cannot connect to anyone else's broker.
+It then starts Mosquitto and every component, exporting each service's own
+credential.
+
+Publish the dashboard on the public internet (Tailscale Funnel):
+
+```bash
+./serve_demo.sh          # dashboard on 443, broker websocket on 8443
+./serve_demo.sh --stop
+```
 
 ## Layout
 
@@ -23,8 +43,33 @@ main.py            Entry point — starts all twins + orchestrator
 sensor_simulator.py S1's telemetry source — needed to run/test S2 locally
 watch.py           Cross-platform MQTT topic watcher — use instead of
                     mosquitto_sub, no separate install needed
+dashboard/         Read-only operator page (vanilla JS, vendored mqtt.js)
+mosquitto/         Broker config, topic ACL, credential generator
+audit/             Append-only, hash-chained decision trail
+tests/             Automated checks — see Tests below
+docs/              Report, ecosystem diagram, pitch, governance document
+run.sh             One-command start (generates secrets, starts everything)
+serve_demo.sh      Publishes the dashboard over Tailscale Funnel
+acknowledge.py     Operator acknowledgement of a recommendation
+mqtt_identity.py   Per-service credential lookup
 render.yaml, Procfile, Dockerfile   Deploy config (any one works)
 ```
+
+## Authentication
+
+The broker refuses anonymous connections. Every component authenticates as
+itself with its own least-privilege topic ACL (`mosquitto/acl`), because
+`main.py` runs six twins and the orchestrator in one process — a single shared
+credential there would hold the union of all seven permissions.
+
+Credentials come from `MQTT_USERNAME_<CLIENTID>` / `MQTT_PASSWORD_<CLIENTID>`,
+falling back to a shared `MQTT_USERNAME` / `MQTT_PASSWORD` pair. `run.sh`
+exports them from `mosquitto/credentials.json`.
+
+If a credential is missing or wrong, every client says so and names the
+variable to set — the broker's refusal arrives in CONNACK, after the socket
+opens, so a client that ignores it would subscribe into a closed connection
+and appear healthy while publishing nothing.
 
 ## Verify it's working
 
@@ -64,8 +109,8 @@ trend-baseline fallback so it's never blocked on training being finished.
 export MQTT_HOST=<broker-host>
 export MQTT_PORT=1883       # 8883 for HiveMQ Cloud + MQTT_TLS=true
 export MQTT_TLS=false        # true for any cloud broker
-export MQTT_USERNAME=...     # only needed if the broker requires auth
-export MQTT_PASSWORD=...
+export MQTT_USERNAME=...     # required — the broker refuses anonymous clients
+export MQTT_PASSWORD=...     # (./run.sh sets per-service credentials for you)
 export RUN_SIMULATOR=true    # also runs sensor_simulator.py in this process
 export AUTO_ANOMALY=false    # true = auto-trigger CRAC-01 fault ~20s after start
 python main.py
@@ -164,6 +209,8 @@ way) and ignored fan power entirely, so degradation appeared to cost nothing.
 ## Tests
 
 ```bash
+python3 tests/test_broker_security.py     # 8 access-control attempts
+python3 tests/test_audit_chain.py         # tamper + sequence detection
 python3 tests/test_energy_model.py        # CRAC power model + PUE bounds
 python3 tests/test_slope_units.py         # live slopes == training units
 python3 tests/test_substep_cap.py         # sub-stepping + speed invariance
