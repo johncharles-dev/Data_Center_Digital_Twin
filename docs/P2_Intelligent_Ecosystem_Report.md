@@ -170,7 +170,23 @@ hardcoded list, making a feature-order mismatch impossible.
 
 ### 1.4 Evidence it works
 
-Model quality, from the committed notebook outputs:
+**Figure 2 — Warning before failure, per failing test run.** Each point is one
+of the 31 failing runs; the vertical rule is the median for that detector. The
+model's median lead is 292.5 minutes against 195.2 from the same room's
+threshold rules, a gap of 97.3 minutes. Both detectors caught all 31 runs, so
+the medians are comparable. Regenerate with
+`python3 docs/figures/make_lead_time_figure.py`, which scores the committed
+model artefact and aborts rather than writing the figure if its numbers drift
+from the notebook's.
+
+![Warning before failure, 31 failing test runs](figures/lead_time_comparison.png)
+
+Figure 2 is the project's central claim in one picture: the model's distribution
+sits bodily to the right of the threshold rules', not merely ahead of it on
+average.
+
+**Figure 3 — Model quality on the held-out test set**, from the committed
+notebook outputs:
 
 | Metric | Value | Source |
 |---|---|---|
@@ -182,10 +198,11 @@ Model quality, from the committed notebook outputs:
 | Time-to-failure MAE, gradient boosting | 17.26 min | cell 15 |
 | Time-to-failure MAE, linear regression | 31.16 min | cell 17 |
 
-Linear regression is reported because the brief requires it, and is retained even
-though gradient boosting is materially better.
+Linear regression is reported in Figure 3 because the brief requires it, and is
+retained even though gradient boosting is materially better. The false-alarm rate
+in Figure 3 is the check that the split design in §3.2 exists to protect.
 
-The headline comparison, cell 19:
+The headline comparison behind Figure 2, cell 19:
 
 ```
 Failing test runs: 31
@@ -274,11 +291,16 @@ because it is busy" from "the room is hot because the CRAC is failing"
 | Cooling Twin | `twins/cooling_twin.py` | `datacenter/twin-state/cooling` |
 | Orchestrator | `orchestrator/orchestrator.py:142` | `datacenter/predictions/CRAC-01`, `datacenter/recommendations/room` |
 
-**Figure 1 — Integrated ecosystem architecture** (`docs/ecosystem_diagram.png`,
-vector source `docs/ecosystem_diagram.svg`) shows the full path from simulated
+**Figure 1 — Integrated ecosystem architecture.** The full path from simulated
 assets through telemetry, sub-twins and twin state to the central orchestrator
 and its two decision outputs, with the coordination-strategy rationale alongside.
-Figure 1 is the reference for every topic name used in this report.
+Vector source `docs/ecosystem_diagram.svg`.
+
+![Integrated ecosystem architecture](ecosystem_diagram.png)
+
+Figure 1 is the reference for every topic name used in this report. Note what it
+does not show: there are no arrows between twins, because no twin subscribes to
+another twin's state.
 
 The orchestrator re-runs inference only when cooling state changes
 (`orchestrator/orchestrator.py:142`). Firing on every twin-state message meant
@@ -335,39 +357,106 @@ B1–B2). This section states the measures and the evidence for them.
 
 ### 3.1 Purpose
 
-A system that advises engineers must protect the integrity of its advice, and
-must be honest about what it knows.
+A system that advises engineers must protect the integrity of its advice, keep a
+record of what it advised and why, be honest about which of its outputs it can
+justify, and be worth running. Four requirements — security, auditability,
+transparency and return — and one constraint that governs all of them: a human
+decides, not the system.
 
-### 3.2 Design decisions — security
+### 3.2 Design decisions
 
-**Every component authenticates as itself.** Twelve identities, one per service,
-each with a least-privilege topic ACL (`mosquitto/acl`). This matters because
-`main.py` runs six twins and the orchestrator in one process; a single shared
-credential would collapse the ACL into one account holding the union of all seven
-permissions. `mqtt_identity.py:36` resolves per-service credentials with a
-fallback to a shared pair so existing deployments keep working.
+**Security — every component authenticates as itself.** Twelve identities, one
+per service, each with a least-privilege topic ACL (`mosquitto/acl`). This
+matters because `main.py` runs six twins and the orchestrator in one process; a
+single shared credential would collapse the ACL into one account holding the
+union of all seven permissions. `mqtt_identity.py:36` resolves per-service
+credentials with a fallback to a shared pair so existing deployments keep
+working.
 
-**Exactly one identity may publish a recommendation.** A recommendation is the
-system's actuating output — the thing a human acts on — so `orchestrator` alone
-holds `topic write datacenter/recommendations/room`.
+**Security — exactly one identity may publish a recommendation.** A
+recommendation is the system's actuating output, the thing a human acts on, so
+`orchestrator` alone holds `topic write datacenter/recommendations/room`. The
+audit sink can read decisions and write nothing: it cannot forge what it records.
+Secrets are never committed — `mosquitto/make_credentials.sh` creates a local CA,
+a server certificate and twelve passwords on first run, all gitignored, so a
+fresh clone cannot connect to anybody's broker. The public dashboard credential
+is read-only by policy rather than convention, which is what makes it acceptable
+to ship inside a page anyone can view-source.
 
-**The audit sink can read decisions and write nothing.** It cannot forge what it
-records.
+**Auditability — the producer stamps the sequence number, not the recorder.**
+A counter assigned on receipt can only count what arrived and could never reveal
+a gap; stamping at the source (`orchestrator/orchestrator.py:171`) makes a lost
+decision detectable. Records are hash-chained per source
+(`audit/audit_sink.py:61`) because filesystem append-only flags require root,
+whereas a hash chain makes tampering detectable with no privilege at all.
 
-**Secrets are never committed.** `mosquitto/make_credentials.sh` creates a local
-CA, a server certificate and twelve passwords on first run; all are gitignored. A
-fresh clone carries no credentials and cannot connect to anybody's broker.
+**Auditability — a decision to withhold is a decision.** The load-versus-fault
+rule used to suppress advice silently, so a subscriber could not distinguish low
+risk from risk attributed to compute load. Predictions now carry
+`recommendation_withheld` and the load factor behind it
+(`orchestrator/orchestrator.py:162`), which puts the suppression in the record
+rather than leaving it to be inferred.
 
-**The public dashboard credential is read-only by policy, not by convention.**
-`viewer` can read four topic families and write nothing, which is what makes it
-acceptable to ship inside a page anyone can view-source.
+**Transparency — label the provenance of each output.** Each prediction carries
+`predicted_mode` *and* `predicted_mode_basis: "rule"`
+(`inference/model_loader.py:78`), so a subscriber inherits the distinction
+between what the trained model produced and what a rule derived rather than
+having to know it. The corresponding restraint: `contributing_factors` is the
+CRAC's own tripped sensor limits passed through
+(`inference/model_loader.py:77`), not per-feature attribution.
 
-### 3.3 Evidence — security tested by attempting what should fail
+**Bias mitigation — design the evaluation so it cannot flatter the model.**
+Four decisions, all made before any number was quoted:
 
-`tests/test_broker_security.py` makes eight attempts against the running broker
-and records the protocol response and matching broker log line. MQTT v5 is used
-deliberately: under 3.1.1 a denied publish receives a normal PUBACK, making
-"refused" indistinguishable from "delivered".
+1. **Split on runs, not rows.** Consecutive 30-second samples from one
+   degradation are near-identical. A random row split puts almost the same
+   sample in train and test and produces a score that measures memorisation.
+   The split groups by `run_id` (notebook cell 9).
+2. **Stratify the split by outcome.** A plain group split over 140 runs can, by
+   chance, leave zero of the 39 healthy runs in the test fold — which would
+   silently delete the false-alarm check. Each outcome is split separately and
+   recombined (cell 9).
+3. **Weight the classes.** Failure is the minority outcome at a 24.7% positive
+   rate on the four-hour horizon, so an unweighted model can score well by
+   under-predicting it. `class_weight="balanced"` (cell 11).
+4. **Claim nothing the artefact cannot support.** There is no mechanism
+   classifier, so no mechanism accuracy is claimed anywhere — a figure of that
+   kind was removed from the executive pitch during verification rather than
+   defended.
+
+**Human oversight — nothing actuates.** `orchestrator/rules.py:7` produces an
+action string and a rationale; no component sends a control signal to any
+equipment. Operator acknowledgement is a separate identity (`acknowledge.py`,
+ACL `operator`) that may acknowledge and may **not** recommend: the person acting
+on a decision cannot author one.
+
+### 3.3 Implementation
+
+| Concern | Where it lives |
+|---|---|
+| Identities and topic permissions | `mosquitto/acl`, `mosquitto/make_credentials.sh` |
+| Per-service credential resolution | `mqtt_identity.py:36` |
+| Decision record | `audit/audit_sink.py` → `logs/audit.jsonl` |
+| Producer sequence + withheld reason | `orchestrator/orchestrator.py:162`, `:171` |
+| Output provenance | `inference/model_loader.py:29`, `:77`, `:78` |
+| Energy and cost basis | `twins/energy_twin.py:76`, `:83`, `:86` |
+| Acknowledgement | `acknowledge.py` |
+
+The broker runs from `docker-compose.yml` with three listeners — plain MQTT on
+loopback, TLS on 8883, and WebSockets for the browser, the last left plaintext
+because Tailscale Funnel terminates TLS in front of it rather than
+double-terminating.
+
+### 3.4 Evidence it works
+
+**Security.** `tests/test_broker_security.py` makes eight attempts against the
+running broker and records the protocol response and matching broker log line.
+MQTT v5 is used deliberately: under 3.1.1 a denied publish receives a normal
+PUBACK, making "refused" indistinguishable from "delivered".
+
+**Figure 4 — Access-control transcript.** Eight attempts against the running
+broker, each showing the protocol response and, where the broker logged one, the
+refusal line. Reproduce with `python3 tests/test_broker_security.py`.
 
 | # | Attempt | Observed |
 |---|---|---|
@@ -380,62 +469,58 @@ deliberately: under 3.1.1 a denied publish receives a normal PUBACK, making
 | 7 | The simulator subscribes to recommendations | messages delivered: **0**, while a permitted subscriber received the same publish |
 | 8 | The orchestrator publishes a recommendation | `PUBACK 0 Success`, delivered |
 
-**8 of 8 behave as the policy requires**, and did so on five consecutive runs.
-Case 7 is worth noting: Mosquitto grants the subscription and silently declines
-delivery rather than refusing the SUBACK, so the property asserted is *no
-delivery*, established by measurement rather than assumed from the config.
+**8 of 8 behave as the policy requires**, on five consecutive runs. Case 7 is
+worth noting: Mosquitto grants the subscription and silently declines delivery
+rather than refusing the SUBACK, so the property asserted is *no delivery*,
+established by measurement rather than assumed from the config.
 
 **The suite runs against the live broker rather than a fixture, and that choice
-produced two findings of its own.** The first was mechanical: case 3 connected
+produced two findings of its own.** The first was mechanical: a case connected
 using the client id the live cooling twin already held, and MQTT evicts an
 existing session when a second client claims its id, so the test and the running
-twin knocked each other off the broker. The second was substantive. Case 3 asked
-"did the subscriber receive anything?" while the real orchestrator was publishing
-legitimate recommendations to that same topic several times a second — so a
-forgery the broker had **correctly refused** still looked delivered, and the
+twin knocked each other off the broker. The second was substantive. That case
+asked "did the subscriber receive anything?" while the real orchestrator was
+publishing legitimate recommendations to the same topic several times a second —
+so a forgery the broker had **correctly refused** still looked delivered, and the
 suite failed intermittently on the case that proves the single-writer rule. The
-security property was never broken; the measurement of it was. Each case now
-tags its own payload and looks for that tag.
+security property was never broken; the measurement of it was. Each case now tags
+its own payload and looks for that tag.
 
-A fixture would have hidden both. It would also have made these results much
-less worth quoting: what is reported above is what the broker does under the
-traffic the system actually generates, not what it does in isolation.
+A fixture would have hidden both. It would also have made these results much less
+worth quoting: what Figure 4 reports is what the broker does under the traffic the
+system actually generates, not what it does in isolation.
 
-### 3.4 Design and evidence — auditability
+**Auditability.** `tests/test_audit_chain.py` proves the guarantee by breaking
+it — 17 assertions covering a clean chain, a dropped decision flagged
+`GAP(missing=2)`, a producer restart distinguished from a gap, independent
+per-source chains, an **edited payload detected**, a **deleted record detected**,
+and a sink restart that continues the chain rather than forking it. All pass. On
+the running system, a two-minute clean-clone start produced 345 records with
+every chain intact.
 
-Every prediction, recommendation and acknowledgement is appended to
-`logs/audit.jsonl` by `audit/audit_sink.py`, opened `O_APPEND` and `fsync`ed.
+**Transparency.** Removing the threshold flags from a prediction input leaves the
+probability unchanged at 0.662 while `contributing_factors` goes empty — the
+model contributes nothing to that field, and the system does not pretend
+otherwise. Reproduce with `inference/model_loader.py`'s `predict()` on any
+cooling state.
 
-**Sequence numbers are stamped by the producer, not the sink**
-(`orchestrator/orchestrator.py:171`). A counter assigned on receipt can only count
-what arrived and could never reveal a gap; stamping at the source makes a lost
-decision detectable. `audit/audit_sink.py:152` distinguishes a gap from a producer
-restart rather than guessing.
+**Bias mitigation.** The split produces 97 train and 43 test runs with every
+outcome represented in both folds, and the false-alarm check that depends on it
+returns **0.08 false alarms per healthy run — one run in twelve** (Figure 3).
+Withholding advice when load explains the heat is measured on the wire: **143 of
+437 predictions** in one run, 165 of 247 warning-phase samples in another, and
+`tests/test_load_driven_branch.py` sweeps the reachable input space to show the
+branch behaves in all four quadrants.
 
-**Records are hash-chained per source** (`audit/audit_sink.py:61`). Filesystem
-append-only flags require root; a hash chain makes tampering detectable with no
-privilege at all. `audit/audit_sink.py:191` re-verifies every chain.
-
-`tests/test_audit_chain.py` proves the guarantee by breaking it — 17 assertions
-covering a clean chain, a dropped decision flagged `GAP(missing=2)`, a producer
-restart distinguished from a gap, independent per-source chains, an **edited
-payload detected**, a **deleted record detected**, and a sink restart that
-continues the chain rather than forking it. All pass.
-
-### 3.5 Design and evidence — ROI
-
-Cooling energy is computed from telemetry, not assumed. `twins/energy_twin.py:86`
-splits CRAC draw into two components:
-
-- **Fan**, by the affinity law on measured shaft speed: `P = 1.459 × (rpm/3200)³`.
-  The rated figure is derived at the nominal duty point — `Q·Δp/η = 1.6045 m³/s ×
-  500 Pa / 0.55 = 1459 W` (`twins/energy_twin.py:76`).
-- **Compressor**, linear in reported load: `P = 10.0 × load%/100`, from 30 kW
-  sensible capacity at COP 3.0 (`twins/energy_twin.py:83`). Linear because the
-  modelled unit is a fixed-speed scroll compressor that cycles, so mean power is
-  proportional to run-time fraction.
-
-Measured live across a fault:
+**ROI.** Cooling energy is computed from telemetry, not assumed
+(`twins/energy_twin.py:86`). Fan power follows the affinity law on measured shaft
+speed, `P = 1.459 × (rpm/3200)³`, with the rated figure derived at the nominal
+duty point — `Q·Δp/η = 1.6045 m³/s × 500 Pa / 0.55 = 1459 W`
+(`twins/energy_twin.py:76`). Compressor power is linear in reported load,
+`P = 10.0 × load%/100`, from 30 kW sensible capacity at COP 3.0
+(`twins/energy_twin.py:83`) — linear because the modelled unit is a fixed-speed
+scroll compressor that cycles, so mean power is proportional to run-time
+fraction. Measured live across a fault:
 
 | State | fan kW | comp kW | CRAC kW | IT kW | PUE |
 |---|---|---|---|---|---|
@@ -443,55 +528,34 @@ Measured live across a fault:
 | degrading | 1.64 | 7.00 | 8.64 | 21.0 | **1.41** |
 | tripped | 1.83 | 8.50 | 10.33 | 23.4 | **1.44** |
 
-Live range observed: **PUE 1.337 → 1.491**, CRAC draw **6.91 → 9.18 kW**.
-
-The affinity law is why early detection pays: the fan runs 3200 → 3450 rpm while
+Live range observed: **PUE 1.337 → 1.491**, CRAC draw **6.91 → 9.18 kW**. The
+affinity law is why early detection pays — the fan runs 3200 → 3450 rpm while
 degrading, a **7.8% speed rise that becomes 25% more fan power**. A degraded unit
-draws **3.37 kW more** than a healthy one — SGD 14.55 per day at 0.18 SGD/kWh.
-`tests/test_energy_model.py` asserts the model obeys the laws it claims (doubling
-speed multiplies fan power by 8) and that PUE stays in 1.25–1.60 and worsens
-monotonically as the unit degrades. 18 assertions, all pass.
+draws **3.37 kW more** than a healthy one, SGD 14.55 per day at 0.18 SGD/kWh.
+`tests/test_energy_model.py` asserts the model obeys the laws it claims — doubling
+speed multiplies fan power by 8 — and that PUE stays in 1.25–1.60 and worsens
+monotonically as the unit degrades. 18 assertions, all pass. The business case
+built on this quantity is in `docs/Executive_Pitch.pptx`, which separates measured
+from assumed figures and shows the case with every benefit halved.
 
-The business case built on this quantity is in `docs/Executive_Pitch.pptx`, which
-separates measured from assumed figures explicitly and shows the case with every
-benefit halved.
-
-### 3.6 Design and evidence — transparency
-
-The system labels the provenance of its own outputs. Each prediction carries
-`predicted_mode` **and** `predicted_mode_basis: "rule"`
-(`inference/model_loader.py:78`), so a subscriber inherits the distinction between
-what the trained model produced and what a rule derived, rather than having to
-know it. The dashboard renders that distinction — "rule-derived" on the mode chip,
-and "not per-feature model attribution" beneath the tripped-limits panel.
-
-The corresponding restraint: `contributing_factors` is the CRAC's own tripped
-sensor limits passed through (`inference/model_loader.py:77`), not per-feature
-attribution. Removing the flags from a prediction input leaves the probability
-unchanged at 0.662 while the factors go empty — the model contributes nothing to
-that field, and the system does not pretend otherwise. No mechanism accuracy is
-claimed anywhere, because no mechanism classifier exists.
-
-### 3.7 Design and evidence — human oversight
-
-Nothing actuates. `orchestrator/rules.py:7` produces an action string and a
-rationale; no component sends a control signal to any equipment. Operator
-acknowledgement is a separate identity (`acknowledge.py`, ACL `operator`) that may
-acknowledge and may **not** recommend — the person acting on a decision cannot
-author one.
-
-### 3.8 Limitations
+### 3.5 Limitations
 
 - **ACLs are enforced by the local broker only.** A cloud deployment via
   `render.yaml` points at an external broker where these identities would have to
   be provisioned separately.
 - **The `viewer` password is public** by construction. Read-only, but anyone with
   the link can watch the simulated room.
-- **Bias.** The model has seen two coupled failure mechanisms and one room
-  geometry. It has no basis for a unit that fails differently, and its confidence
-  in that situation is not a measure of anything.
+- **Bias mitigation addresses evaluation, not coverage.** Grouping, stratifying
+  and weighting stop the score from flattering the model on the data it has; none
+  of it helps with a unit that fails by a mechanism absent from training. The
+  model has seen two coupled mechanisms and one room geometry, and its confidence
+  outside that is not a measure of anything.
+- **The ROI case rests on one unmeasured quantity** — how long a fault would
+  otherwise run undetected. It is an assumption this project cannot test, and the
+  pilot phase exists to replace it.
+- **Recommendation cost is not computed.** `orchestrator/rules.py:33` returns
+  `None`, so no cost accompanies advice.
 
----
 <div style="page-break-after: always;"></div>
 
 ## 4. Strategic roadmap
@@ -515,7 +579,10 @@ faults are simulated.
 multi-room boundary, where room-level twins exchange summaries rather than raw
 telemetry.
 
-### 4.3 Implementation status
+### 4.3 Implementation
+
+Phase one is built and running; the rest are planned, and saying so plainly is
+part of the deliverable.
 
 | Phase | Status |
 |---|---|
@@ -524,7 +591,7 @@ telemetry.
 | Production — advice acted on, ROI assumption replaced by measurement | not started |
 | Multi-room — federated room-level twins | not started |
 
-### 4.4 Evidence
+### 4.4 Evidence it works
 
 The prototype phase is demonstrable end to end from a clean clone (see *How to
 run this*) and continuously at the live URL.
