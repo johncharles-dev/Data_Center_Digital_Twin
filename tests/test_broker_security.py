@@ -62,7 +62,19 @@ def creds():
 class Client:
     """A v5 client that records the reason codes the broker returns."""
 
-    def __init__(self, username=None, password=None, client_id="sectest"):
+    def __init__(self, username=None, password=None, client_id="probe"):
+        # Namespace every client id this suite uses.
+        #
+        # MQTT evicts an existing session when a second client connects with
+        # the same client id. Case 3 below connected as client_id
+        # "twin-cooling" — the id the LIVE cooling twin holds — so the two
+        # knocked each other off the broker and the suite failed roughly one
+        # run in four, on the case that proves the single-writer rule.
+        #
+        # The ACL keys off the USERNAME, not the client id, so authenticating
+        # as `twin-cooling` while holding a different id tests exactly the same
+        # policy without colliding with the running system.
+        client_id = "sectest-" + client_id
         self.connack = None
         self.suback = None
         self.puback = None
@@ -120,6 +132,19 @@ class Client:
             self.c.disconnect()
         except Exception:
             pass
+
+
+def saw(client, marker):
+    """True if this client received a message containing `marker`.
+
+    Counting arrivals does not work here. The suite runs against the LIVE
+    broker, where the real orchestrator publishes legitimate recommendations
+    to datacenter/recommendations/room several times a second. A test that
+    asked "did the subscriber receive anything?" was answered by that traffic,
+    so a correctly REFUSED forgery still looked delivered. Each case now tags
+    its own payload and looks for that tag.
+    """
+    return any(marker.encode() in payload for _, payload in client.received)
 
 
 def broker_log_since(marker_time, pattern):
@@ -187,11 +212,10 @@ def main():
     t3 = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 1))
     cl = Client("twin-cooling", c["twin-cooling"], client_id="twin-cooling")
     cl.connect()
-    before = len(watcher.received)
     rc = cl.publish("datacenter/recommendations/room",
                     json.dumps({"action": "FORGED", "source": "twin-cooling"}))
     time.sleep(1.0)
-    delivered = len(watcher.received) > before
+    delivered = saw(watcher, "FORGED")
     cl.close()
     record(3, "twin-cooling publishes a forged RECOMMENDATION",
            "PUBACK 135 Not authorized, and no delivery to subscribers",
@@ -240,13 +264,12 @@ def main():
 
     publisher = Client("orchestrator", c["orchestrator"], client_id="orch-probe-7")
     publisher.connect()
-    watcher_before = len(watcher.received)
     publisher.publish("datacenter/recommendations/room",
-                      json.dumps({"action": "probe", "source": "orchestrator"}))
+                      json.dumps({"action": "sectest-probe", "source": "orchestrator"}))
     time.sleep(1.5)
 
     eavesdropped = len(eavesdropper.received)
-    witnessed = len(watcher.received) > watcher_before
+    witnessed = saw(watcher, "sectest-probe")
     eavesdropper.close()
     publisher.close()
 
@@ -261,11 +284,10 @@ def main():
     # 8 -------------------------------------------------------------------
     cl = Client("orchestrator", c["orchestrator"], client_id="orch-probe")
     cl.connect()
-    before = len(watcher.received)
     rc = cl.publish("datacenter/recommendations/room",
-                    json.dumps({"action": "legitimate", "source": "orchestrator"}))
+                    json.dumps({"action": "sectest-legitimate", "source": "orchestrator"}))
     time.sleep(1.0)
-    delivered = len(watcher.received) > before
+    delivered = saw(watcher, "sectest-legitimate")
     cl.close()
     record(8, "orchestrator publishes a recommendation (the ONE identity allowed)",
            "PUBACK 0 Success, and delivered to subscribers",

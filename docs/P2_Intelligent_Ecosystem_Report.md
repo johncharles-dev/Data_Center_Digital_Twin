@@ -380,10 +380,26 @@ deliberately: under 3.1.1 a denied publish receives a normal PUBACK, making
 | 7 | The simulator subscribes to recommendations | messages delivered: **0**, while a permitted subscriber received the same publish |
 | 8 | The orchestrator publishes a recommendation | `PUBACK 0 Success`, delivered |
 
-**8 of 8 behave as the policy requires.** Case 7 is worth noting: Mosquitto grants
-the subscription and silently declines delivery rather than refusing the SUBACK,
-so the property asserted is *no delivery*, established by measurement rather than
-assumed from the config.
+**8 of 8 behave as the policy requires**, and did so on five consecutive runs.
+Case 7 is worth noting: Mosquitto grants the subscription and silently declines
+delivery rather than refusing the SUBACK, so the property asserted is *no
+delivery*, established by measurement rather than assumed from the config.
+
+**The suite runs against the live broker rather than a fixture, and that choice
+produced two findings of its own.** The first was mechanical: case 3 connected
+using the client id the live cooling twin already held, and MQTT evicts an
+existing session when a second client claims its id, so the test and the running
+twin knocked each other off the broker. The second was substantive. Case 3 asked
+"did the subscriber receive anything?" while the real orchestrator was publishing
+legitimate recommendations to that same topic several times a second — so a
+forgery the broker had **correctly refused** still looked delivered, and the
+suite failed intermittently on the case that proves the single-writer rule. The
+security property was never broken; the measurement of it was. Each case now
+tags its own payload and looks for that tag.
+
+A fixture would have hidden both. It would also have made these results much
+less worth quoting: what is reported above is what the broker does under the
+traffic the system actually generates, not what it does in isolation.
 
 ### 3.4 Design and evidence — auditability
 
