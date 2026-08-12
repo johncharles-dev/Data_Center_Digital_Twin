@@ -69,8 +69,14 @@ cd Data_Center_Digital_Twin
 `run.sh` generates the broker credentials that are deliberately absent from the
 repository, starts Mosquitto, then launches the twins, orchestrator, telemetry
 simulator, occupancy publisher and audit sink. Verified from a genuine fresh
-clone on 11 August 2026: **345 audited decisions in the first two minutes, hash
-chain intact, no authentication failures in any log**.
+clone on 11 August 2026, at `run.sh --interval 0.4` (75x real time): **345
+audited decisions in the first two minutes of wall clock — about 2.5 simulated
+hours — hash chain intact, no authentication failures in any log**.
+
+The interval is quoted because the count is a rate against the wall clock, not a
+property of the system: the same two minutes at the `0.05` default covers eight
+times the simulated span and audits roughly eight times as many decisions. The
+simulated figure is the one that reproduces at any playback speed.
 
 Useful commands once it is running:
 
@@ -185,7 +191,7 @@ Figure 2 is the project's central claim in one picture: the model's distribution
 sits bodily to the right of the threshold rules', not merely ahead of it on
 average.
 
-**Figure 3 — Model quality on the held-out test set**, from the committed
+**Table 1 — Model quality on the held-out test set**, from the committed
 notebook outputs:
 
 | Metric | Value | Source |
@@ -198,9 +204,9 @@ notebook outputs:
 | Time-to-failure MAE, gradient boosting | 17.26 min | cell 15 |
 | Time-to-failure MAE, linear regression | 31.16 min | cell 17 |
 
-Linear regression is reported in Figure 3 because the brief requires it, and is
+Linear regression is reported in Table 1 because the brief requires it, and is
 retained even though gradient boosting is materially better. The false-alarm rate
-in Figure 3 is the check that the split design in §3.2 exists to protect.
+in Table 1 is the check that the split design in §3.2 exists to protect.
 
 The headline comparison behind Figure 2, cell 19:
 
@@ -454,7 +460,7 @@ running broker and records the protocol response and matching broker log line.
 MQTT v5 is used deliberately: under 3.1.1 a denied publish receives a normal
 PUBACK, making "refused" indistinguishable from "delivered".
 
-**Figure 4 — Access-control transcript.** Eight attempts against the running
+**Table 2 — Access-control transcript.** Eight attempts against the running
 broker, each showing the protocol response and, where the broker logged one, the
 refusal line. Reproduce with `python3 tests/test_broker_security.py`.
 
@@ -487,7 +493,7 @@ security property was never broken; the measurement of it was. Each case now tag
 its own payload and looks for that tag.
 
 A fixture would have hidden both. It would also have made these results much less
-worth quoting: what Figure 4 reports is what the broker does under the traffic the
+worth quoting: what Table 2 reports is what the broker does under the traffic the
 system actually generates, not what it does in isolation.
 
 **Auditability.** `tests/test_audit_chain.py` proves the guarantee by breaking
@@ -506,7 +512,7 @@ cooling state.
 
 **Bias mitigation.** The split produces 97 train and 43 test runs with every
 outcome represented in both folds, and the false-alarm check that depends on it
-returns **0.08 false alarms per healthy run — one run in twelve** (Figure 3).
+returns **0.08 false alarms per healthy run — one run in twelve** (Table 1).
 Withholding advice when load explains the heat is measured on the wire: **143 of
 437 predictions** in one run, 165 of 247 warning-phase samples in another, and
 `tests/test_load_driven_branch.py` sweeps the reachable input space to show the
