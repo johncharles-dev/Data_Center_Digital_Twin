@@ -1,8 +1,6 @@
 # Intelligent Data Centre Digital Twin
 
 **Project 2 — Intelligent Ecosystem & Strategic Optimization (Advanced)**
-Lourduraj John Charles (1011136) · Syed Adeel Ahmed Mustaq Ahamed (1011010) ·
-Yang Xingyu (1010962) · Kuhu Gupta (1010814) — submission 16 August 2026
 
 Predictive cooling maintenance for a three-rack server room. Six twins of four
 types — three rack twins plus cooling, occupancy and energy — feed a central
