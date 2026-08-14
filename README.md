@@ -27,6 +27,9 @@ From a clean clone. Needs Docker and Python 3.11+.
 ```bash
 git clone https://github.com/johncharles-dev/Data_Center_Digital_Twin.git
 cd Data_Center_Digital_Twin
+wsl # open Ubuntu
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt     # add --break-system-packages on Debian/Ubuntu
 ./run.sh                            # terminal 1 — the system itself
 ```
