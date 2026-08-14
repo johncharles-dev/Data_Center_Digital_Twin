@@ -30,6 +30,41 @@ export MQTT_HOST="${MQTT_HOST:-localhost}"
 export MQTT_PORT="${MQTT_PORT:-1883}"
 export MQTT_TLS="${MQTT_TLS:-false}"
 
+# -------------------------------------------------------------- 0. preflight
+# Checked here rather than left to fail later. Without this, a missing package
+# surfaces as an ImportError inside main.py after the broker is already up, in
+# a log file the reader has no reason to open yet, and a missing Docker daemon
+# surfaces as an opaque compose error. Both are one-line fixes if named.
+echo "[run] checking prerequisites"
+
+if ! command -v docker >/dev/null; then
+  echo "[run] ERROR: docker is not installed, and the broker runs in a container." >&2
+  echo "       Install Docker Engine or Docker Desktop, then re-run ./run.sh" >&2
+  exit 1
+fi
+if ! docker info >/dev/null 2>&1; then
+  echo "[run] ERROR: docker is installed but the daemon is not reachable." >&2
+  echo "       Start Docker (or add yourself to the 'docker' group), then re-run." >&2
+  exit 1
+fi
+
+missing="$(python3 - <<'PY'
+# import name -> distribution name, which are not the same for paho or sklearn
+mods = [("paho.mqtt", "paho-mqtt"), ("sklearn", "scikit-learn"),
+        ("joblib", "joblib"), ("pandas", "pandas"), ("numpy", "numpy")]
+import importlib.util   # not just `import importlib`: .util is not always bound
+print(" ".join(d for m, d in mods if not importlib.util.find_spec(m.split(".")[0])))
+PY
+)"
+if [[ -n "$missing" ]]; then
+  echo "[run] ERROR: missing Python packages: $missing" >&2
+  echo "       Install them with:" >&2
+  echo "           pip install -r requirements.txt" >&2
+  echo "       On Debian/Ubuntu add --break-system-packages, or use a virtualenv." >&2
+  exit 1
+fi
+echo "[run] docker and Python dependencies present"
+
 # ---------------------------------------------------------------- 1. secrets
 # Idempotent: generates a CA, a server certificate and one password per
 # service identity on first run, then re-stages the broker's runtime config.
@@ -114,7 +149,7 @@ cat <<EOF
       watch predictions : python3 watch.py datacenter/predictions/CRAC-01
       audit trail       : python3 audit/audit_sink.py --show 20
       verify the chain  : python3 audit/audit_sink.py --verify
-      serve the demo    : ./serve_demo.sh
+      see the dashboard : ./serve_demo.sh --local  -> http://127.0.0.1:8011/
 
       Ctrl-C to stop.
 EOF

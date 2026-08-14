@@ -22,26 +22,40 @@ silent — comes round shortly after you open it.
 
 ## Quick start
 
-One command, from a clean clone. Needs Docker and Python 3.11+.
+From a clean clone. Needs Docker and Python 3.11+.
 
 ```bash
 git clone https://github.com/johncharles-dev/Data_Center_Digital_Twin.git
 cd Data_Center_Digital_Twin
-./run.sh
+pip install -r requirements.txt     # add --break-system-packages on Debian/Ubuntu
+./run.sh                            # terminal 1 — the system itself
 ```
 
-`run.sh` bootstraps everything a fresh clone lacks: it generates the broker
-credentials, TLS certificates and per-service passwords (all deliberately absent
-from git, so a clone cannot connect to anyone else's broker), starts Mosquitto in
-Docker, waits for it to accept connections, then launches the twins,
-orchestrator, telemetry simulator, occupancy publisher and audit sink. Nothing is
-interactive and nothing needs sudo.
+Then, in a second terminal, to see it:
 
 ```bash
-./run.sh --interval 0.4   # slower playback; the live demo runs at this speed
+./serve_demo.sh --local             # terminal 2 — dashboard on loopback
+```
+
+Open **<http://127.0.0.1:8011/>**.
+
+`run.sh` checks Docker and the Python packages first and names the fix if either
+is missing, then bootstraps everything a fresh clone lacks: broker credentials,
+TLS certificates and per-service passwords (all deliberately absent from git, so
+a clone cannot connect to anyone else's broker). It starts Mosquitto in Docker,
+waits for it to accept connections, then launches the twins, orchestrator,
+telemetry simulator, occupancy publisher and audit sink. Nothing is interactive
+and nothing needs sudo.
+
+`serve_demo.sh --local` writes `dashboard/config.js` — the read-only viewer
+credential the page needs, which is gitignored and therefore absent from a fresh
+clone — and serves `dashboard/` on loopback. No Tailscale, no public exposure.
+The trained model is committed, so there is nothing to train.
+
+```bash
+./run.sh --interval 0.4   # slower playback; the hosted demo runs at this speed
 ./run.sh --once           # one degradation cycle instead of looping
 ./run.sh --stop           # stop the broker
-./serve_demo.sh           # publish the dashboard over Tailscale Funnel
 ```
 
 The default is `--interval 0.05`, which cycles in roughly fifteen seconds; the
@@ -113,10 +127,16 @@ threshold, and occupancy genuinely reaching the decision.
 
 ## Deployment
 
+**Nothing here is needed to reproduce the project** — Quick start above is the
+whole reproduction path. This section describes only how the public demo happens
+to be hosted.
+
 The live demo runs from `run.sh` on a single machine, supervised by two systemd
 user services, with the dashboard and the broker's WebSocket listener published
-over Tailscale Funnel by `serve_demo.sh` — the page on 443, the broker on 8443.
-That is the whole deployment.
+over Tailscale Funnel by `./serve_demo.sh` with no arguments — the page on 443,
+the broker on 8443. Tailscale is how that one machine reaches the internet; it is
+not a dependency of the system. Run without it and `serve_demo.sh` exits saying
+so, which is why the reproduction path uses `--local` instead.
 
 `render.yaml`, `Dockerfile` and `Procfile` are a separate, unused cloud path for
 the consumer side only: they run `main.py` as an always-on worker against an
