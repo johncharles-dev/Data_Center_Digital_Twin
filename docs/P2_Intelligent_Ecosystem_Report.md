@@ -128,6 +128,59 @@ steps to follow by hand.
 ---
 <div style="page-break-after: always;"></div>
 
+## Continuity with Project 1
+
+The brief asks for the initial twin to be *extended*. It is, and the extension is
+in the telemetry contract rather than in the AnyLogic file — for a reason worth
+stating plainly.
+
+**What Project 1 delivered.** `SmartDataCenterTwin.alp` (Segment 1 — Asset &
+Schema) is an asset drawing, not a running model. Parsed, it holds 2,051 XML
+elements, of which 155 are positioned drawing objects: 77 labels, 33 text items,
+22 lines, 15 ovals, 5 rectangles, a scale ruler and a level. It declares one
+`ActiveObjectClass` ("Main") whose entire contents are the presentation canvas and
+scene properties. There are **no** functions, events, statecharts, transitions or
+flowchart blocks; `<Parameters>` is present and empty; of 159 CDATA blocks, none
+contains a statement, a `return`, or a control-flow keyword. The eight `<Code>`
+elements hold AnyLogic property defaults (`T extends Agent`, `10`, `1`, `1.0`).
+It opens, and the run button does nothing, because there is no behaviour to run.
+
+That is the correct deliverable for a segment named "Asset & Schema": it fixes the
+room layout, names the assets and defines what each sensor measures. It is a
+specification, and a specification is extended by implementing it, not by opening
+it.
+
+**What therefore carries forward is the contract.** Four things, all checkable:
+
+| Inherited | Where it came from | Where it lives now |
+|---|---|---|
+| Payload schema — `timestamp`, `rack_id`, `location`, `inlet_temperature`, `exhaust_temperature`, `fan_speed`, `power_draw`, `status` | Segment 1 handover | `sensor_simulator.py:276`, unchanged |
+| Asset IDs `SR-RACK-01/02/03`, `CRAC-01` | labels on the `.alp` canvas | `sensor_simulator.py:84-86`, identical strings |
+| Topic tree `datacenter/racks/<RACK_ID>` | Segment 1 handover + Segment 3 dashboard | `TOPIC_BASE`, unchanged |
+| Status rules — `WARNING` above 35 °C exhaust or 8.5 kW; `CRITICAL` above 40 °C, 7000 RPM or 9.0 kW | Segment 1 status rules | `sensor_simulator.py:348`, applied verbatim |
+
+**Project 1's telemetry engine is this simulator.** `sensor_simulator.py` is
+Segment 2's engine, carried over and extended in place — it still opens with the
+Segment 2 header and still states its contract as "from Segment 1 handover +
+dashboard.html". The baselines are the same numbers (inlet 20.0 °C, exhaust
+30.0 °C, fan 4200 RPM, power 5.8 kW), and the rack payload is byte-compatible with
+what the Segment 3 dashboard already consumed.
+
+The Project 2 additions sit *alongside* that, deliberately: the `CRAC-01` stream
+publishes to `datacenter/racks/CRAC-01`, inside the same topic family, so the
+Segment 3 dashboard's `datacenter/racks/#` subscription picks it up with no
+change. Extension by addition, not by replacement — the earlier deliverable keeps
+working while the new assets appear next to it.
+
+So the honest statement of lineage is: the schema, the asset identities, the topic
+tree and the threshold rules are Project 1's and are unmodified; the failure
+physics, the CRAC asset, the four sub-twins, the model and the orchestrator are
+Project 2's. The `.alp` is not carried forward because there is nothing executable
+in it to carry — a point made here rather than left for a reader to discover.
+
+---
+<div style="page-break-after: always;"></div>
+
 ## 1. Predictive intelligence
 
 ### 1.1 Purpose
@@ -228,6 +281,25 @@ On the live system, measured 11 August 2026 over one complete degradation run:
 > first sensor limit tripped.**
 
 Reproduce by capturing a run and passing it to `tests/analyse_live_run.py`.
+Figure 3 shows that window as an operator sees it, mid-run, with the model
+already warning and every sensor still inside its limit.
+
+**Figure 3 — The lead-time window, on the running system.** The dashboard during
+a live degradation run. Failure risk reads **73.9 %** with **60 simulated
+minutes of warning** already accumulated, and all three threshold flags —
+`bearing_overheat`, `filter_restriction`, `airflow_loss` — are unlit. Every
+plain threshold is still below its limit at that moment: motor winding
+**97.8 °C** against a 105 °C trip, filter ΔP **288 Pa** against 350 Pa, and
+airflow **2515 CFM** against a 2210 CFM floor. That is the argument of §1 in one
+frame — a threshold monitor watching these same three signals would have raised
+nothing at all, while the model sits at 0.739 with a 2.56 hour countdown and has
+been warning for an hour. The banner says it plainly: *"Model has warned.
+Threshold rules still silent."* The risk panel is equally careful about what is
+not known — *mechanism not yet identified · model warning only* — because no
+sensor limit has tripped, and the mechanism label is a rule over those limits
+rather than a model output (§1.2).
+
+![Dashboard during the lead-time window: model at 73.9 %, 60 minutes of accumulated warning, all three threshold flags unlit](figures/dashboard_lead_time.png)
 
 ### 1.5 Limitations
 
@@ -325,6 +397,12 @@ Occupancy demonstrably changes the outcome. In a 437-prediction measured run,
 risk above threshold, compute load above 0.8, no equipment limit breached. In an
 earlier longer run, 165 of 247 warning-phase samples (67%) met that condition.
 
+The coordination is visible in Figure 3. The recommendation there reads *reduce
+compute load on affected racks*, issued at `p=0.749` — an action across the rack
+and occupancy twins rather than a cooling action, chosen because risk is high
+while no equipment limit has tripped. A cooling-only twin, seeing the same CRAC
+telemetry, has no basis for proposing that and no rack to propose it to.
+
 `tests/test_load_driven_branch.py` sweeps the reachable input space and asserts
 the branch behaves:
 
@@ -370,6 +448,52 @@ transparency and return — and one constraint that governs all of them: a human
 decides, not the system.
 
 ### 3.2 Design decisions
+
+**Autonomy comes last, and bounded — that is the design, not an omission.** The
+brief asks for an autonomous ecosystem. This system is autonomous in sensing,
+inference and coordination — it decides, unprompted and continuously, what is
+happening and what should be done about it — and it stops short of actuating,
+which the roadmap defers to its final phase rather than abandoning. Why
+actuation is the part that waits:
+
+- **The action space is physical and expensive.** The four actions the
+  orchestrator can recommend are replace a filter, schedule an inspection, shift
+  workload between racks, and raise cooling. Three dispatch a technician or move
+  live compute; the fourth raises energy draw across the room. None is reversible
+  by publishing a correcting message, so the cost of a wrong action is not
+  symmetric with the cost of a delayed one.
+- **The model's own limits make unattended action unsafe.** §1.5 records that the
+  classifier is trained on two failure mechanisms. A third mode puts it outside
+  its training distribution, where it degrades to a low probability rather than an
+  error — the system cannot tell "healthy" from "a fault I have never seen".
+  Acting on that silence automatically converts a known blind spot into unattended
+  physical action.
+- **Advice is withheld precisely where autonomy would be most tempting.** When
+  heat is explained by compute load rather than by a fault, the orchestrator
+  declines to recommend and records why — 143 of 437 predictions in a measured run
+  (§2.4). An autonomous loop would have no equivalent of declining; it would act,
+  or it would need exactly this judgement encoded anyway.
+- **Accountability requires an actor.** Every decision is hash-chained and
+  attributable (§3.3). That record answers "why did this happen" only while a
+  named person authorised the action. Closing the loop removes the human the
+  audit trail exists to hold accountable, at the same time as it removes the
+  operator's chance to catch a bad call.
+
+None of that is an argument for never automating. It is an argument about
+ordering and scope, and the roadmap states both: phase five (§4.3) introduces
+bounded autonomy, restricted to setpoint changes within ±1 °C and workload
+redistribution. The bound is chosen against the failure mode above — those are
+the actions whose worst outcome, if the model is wrong or silent, is a slightly
+warmer room. Control authority is granted in proportion to what has been
+measured, and only for actions that stay safe when the model is at its weakest.
+
+The mechanism such a step needs is already built and exercised rather than
+hypothetical: `acknowledge.py` publishes an operator's response to
+`datacenter/acks/room` under an `operator` identity that the ACL permits to
+acknowledge and explicitly forbids from publishing recommendations. Until phase
+five, the loop is closed by a human whose action is authenticated and recorded —
+a narrower claim than autonomy, and a far easier one to defend on equipment that
+has never been observed failing in the field.
 
 **Security — every component authenticates as itself.** Twelve identities, one
 per service, each with a least-privilege topic ACL (`mosquitto/acl`). This
@@ -596,6 +720,7 @@ part of the deliverable.
 | Pilot — one real CRAC, shadow mode, no advice acted on | not started |
 | Production — advice acted on, ROI assumption replaced by measurement | not started |
 | Multi-room — federated room-level twins | not started |
+| Bounded autonomy — automatic execution limited to setpoint within ±1 °C and workload redistribution | not started |
 
 ### 4.4 Evidence it works
 
@@ -637,5 +762,5 @@ run this*) and continuously at the live URL.
 | Trend-feature units | `python3 tests/test_slope_units.py` |
 | Simulated clock | `python3 tests/test_substep_cap.py` |
 | Load-versus-fault branch | `python3 tests/test_load_driven_branch.py` |
-| Live run analysis | `python3 tests/analyse_live_run.py CAPTURE` (segment by `run_id` first) |
+| Live run analysis | `python3 tests/analyse_live_run.py CAPTURE` (run boundaries handled automatically) |
 | Clean-clone start-up | `git clone …&& ./run.sh` |

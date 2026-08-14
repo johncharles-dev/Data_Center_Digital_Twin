@@ -30,6 +30,18 @@ TRAINING_RANGE = {
     "filter_dp_slope_10min": {"p99": 1.4250, "max": 3.6600, "min": -3.6100},
 }
 
+# Both slope features are diff(20)/20 over a twenty-sample window. For the
+# first twenty samples after a run boundary that window straddles the reset,
+# differencing the new run's healthy opening against the previous run's
+# tripped final state. The result is a large negative spike that measures the
+# concatenation of two runs, not the behaviour of either one.
+#
+# These are excluded from the distribution check and reported separately
+# rather than dropped silently. The exclusion is one-directional in practice:
+# every boundary sample lands BELOW the training minimum and none above the
+# maximum, so nothing that could raise a false alarm is being hidden.
+SLOPE_WINDOW_SAMPLES = 20
+
 
 def parse(path):
     """Returns arrival-ordered (topic, payload) pairs."""
@@ -83,22 +95,56 @@ def main(path):
 
     # ---- 1. Slope features vs training distribution ---------------------
     print("\n=== 1. Slope features vs the training distribution ===")
+    # Flag each sample that sits inside a slope window straddling a run
+    # boundary. A boundary is a change of run_id; if the capture predates
+    # run_id being published, a simulated clock stepping backwards means the
+    # same thing. The start of the capture counts as a boundary too, because
+    # the first window is filling from an unknown prior state.
+    warmup = [False] * len(cooling)
+    since_boundary = 0
+    prev_run = prev_sim = None
+    for i, c in enumerate(cooling):
+        run, sim = c.get("run_id"), c.get("sim_time")
+        boundary = i == 0
+        if run is not None and prev_run is not None and run != prev_run:
+            boundary = True
+        elif (run is None and sim is not None and prev_sim is not None
+              and sim < prev_sim):
+            boundary = True
+        if boundary:
+            since_boundary = 0
+        warmup[i] = since_boundary < SLOPE_WINDOW_SAMPLES
+        since_boundary += 1
+        prev_run, prev_sim = run, sim
+
     verdict = 0
     for feat, ref in TRAINING_RANGE.items():
-        vals = [c.get(feat) for c in cooling if isinstance(c.get(feat), (int, float))]
-        nonzero = [v for v in vals if v != 0.0]
-        if not nonzero:
-            print(f"  {feat}: no non-zero samples")
+        steady, boundary_vals = [], []
+        for i, c in enumerate(cooling):
+            v = c.get(feat)
+            if not isinstance(v, (int, float)) or v == 0.0:
+                continue
+            (boundary_vals if warmup[i] else steady).append(v)
+        if not steady:
+            print(f"  {feat}: no non-zero samples outside run warm-up")
             continue
-        lo, hi = min(nonzero), max(nonzero)
-        inside = sum(1 for v in nonzero if ref["min"] <= v <= ref["max"])
-        pct = 100.0 * inside / len(nonzero)
+        lo, hi = min(steady), max(steady)
+        inside = sum(1 for v in steady if ref["min"] <= v <= ref["max"])
+        pct = 100.0 * inside / len(steady)
         over_max = hi / ref["max"] if ref["max"] else float("inf")
         print(f"  {feat}")
-        print(f"    live range      [{lo:+.4f}, {hi:+.4f}]   n={len(nonzero)}")
+        print(f"    live range      [{lo:+.4f}, {hi:+.4f}]   n={len(steady)}")
         print(f"    training p99    {ref['p99']:+.4f}    training max {ref['max']:+.4f}")
         print(f"    live max / training max = {over_max:.2f}x")
-        print(f"    inside training range: {inside}/{len(nonzero)} ({pct:.1f}%)")
+        print(f"    inside training range: {inside}/{len(steady)} ({pct:.1f}%)")
+        if boundary_vals:
+            outside = sum(1 for v in boundary_vals
+                          if not ref["min"] <= v <= ref["max"])
+            print(f"    run-boundary warm-up: {len(boundary_vals)} sample(s) "
+                  f"excluded, {outside} of them outside training range "
+                  f"(min {min(boundary_vals):+.4f})")
+            print("      reported separately -- a window spanning a run reset "
+                  "measures the join, not the run")
         if pct < 95.0:
             print("    -> FAIL: still out of distribution")
             verdict = 1
