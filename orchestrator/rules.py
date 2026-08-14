@@ -10,7 +10,11 @@ def recommend_action(prediction, cooling_state, energy_state):
 
     if "bearing_overheat" in flags:
         action = "schedule_fan_bearing_inspection"
-        rationale = "Motor temperature at/above Class F alarm point."
+        # Names the trip the flag actually came from. "Class F alarm point"
+        # claimed a provenance this constant does not have: the 105 °C trip is
+        # declared bare in sensor_simulator.py, and under IEC 60085 105 °C is
+        # the Class A limit -- Class F is 155 °C.
+        rationale = "Motor winding temperature at or above its 105 °C trip point."
     elif "filter_restriction" in flags or "airflow_loss" in flags:
         action = "flag_filter_replacement"
         rationale = "Filter pressure drop or airflow loss beyond spec."

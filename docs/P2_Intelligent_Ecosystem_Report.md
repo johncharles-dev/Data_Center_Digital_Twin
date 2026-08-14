@@ -753,6 +753,19 @@ run this*) and continuously at the live URL.
 
 ## Appendix — verification commands
 
+Every row below exists so that a claim in this report is checkable against
+something other than the sentence making it. Running that check across artefacts
+rather than within one found the same defect three times — a statement asserted
+in one place that nothing else in the system supported: arrows between twins on
+an early version of Figure 1, where no twin subscribes to another twin's state;
+a mechanism-accuracy figure on the executive pitch, where the trained artefact
+holds a classifier and a regressor and no mechanism classifier at all
+(`inference/model_loader.py:29`); and a recommendation rationale naming a
+"Class F alarm point", where the 105 °C trip is declared bare in the simulator
+and 105 °C is the IEC 60085 Class A limit, Class F being 155 °C
+(`orchestrator/rules.py:17`). Each was an artefact vouching for itself, and each
+survived until it was read against the code that would have to support it.
+
 | Claim | Command |
 |---|---|
 | Model metrics, lead-time multiple | open `notebooks/train_crac_model.ipynb`, cells 11–19 |

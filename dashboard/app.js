@@ -158,8 +158,8 @@
   }
 
   /* --------------------------------------------- is this advice still true? */
-  // A recommendation is a claim about the room RIGHT NOW ("motor temperature
-  // at/above the Class F alarm point"). Retained on its topic, it outlives
+  // A recommendation is a claim about the room RIGHT NOW ("motor winding
+  // temperature at its 105 °C trip point"). Retained on its topic, it outlives
   // the condition that produced it, so it must be re-checked against current
   // telemetry before being shown — otherwise the page asserts a bearing
   // inspection while the winding reads 72 °C and the banner says all clear.

@@ -238,7 +238,7 @@ class Simulator:
         #
         # MQTT retains the last message on the decision topics, so a consumer
         # connecting during a healthy stretch is handed the previous run's
-        # recommendation ("motor at the Class F alarm point") as if it were
+        # recommendation ("motor winding at its 105 °C trip point") as if it were
         # current. A run id lets a consumer discard anything from a run that
         # has already ended instead of rendering it as live state.
         #
