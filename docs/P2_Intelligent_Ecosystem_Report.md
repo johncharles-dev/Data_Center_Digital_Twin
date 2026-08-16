@@ -159,6 +159,24 @@ it.
 | Topic tree `datacenter/racks/<RACK_ID>` | Segment 1 handover + Segment 3 dashboard | `TOPIC_BASE`, unchanged |
 | Status rules — `WARNING` above 35 °C exhaust or 8.5 kW; `CRITICAL` above 40 °C, 7000 RPM or 9.0 kW | Segment 1 status rules | `sensor_simulator.py:348`, applied verbatim |
 
+Figure 1 places that inheritance in context, and shows where the extension
+actually happened.
+
+**Figure 1 — Six-layer digital twin architecture.** Layers 1 to 3 — the physical
+asset, data acquisition and connectivity — are Project 1's, carried forward with
+the schema and topic tree unmodified. Layers 4 and 5 are new: Project 1 held no
+server-side twin object, and no decision layer existed above the dashboard. Its
+only server-side code is `sensor_simulator.py`, which publishes and never
+subscribes; asset state over time lived in the browser, in the Segment 3
+dashboard's per-rack inlet history. Project 1 was not without logic — the
+publisher stamped a `NORMAL`/`WARNING`/`CRITICAL` status and the dashboard raised
+a slope-based predictive alert — but both sat inside the layers they belonged to,
+with nothing above them fusing state across assets or deciding what to do. Layer
+4 is where this project put that decision, and Layer 6 is where it stops: advice
+to an operator, never actuation.
+
+![Six-layer digital twin architecture, showing which layers are inherited from Project 1 and which were introduced in Project 2](six_layer_architecture.png)
+
 **Project 1's telemetry engine is this simulator.** `sensor_simulator.py` is
 Segment 2's engine, carried over and extended in place — it still opens with the
 Segment 2 header and still states its contract as "from Segment 1 handover +
@@ -369,14 +387,14 @@ because it is busy" from "the room is hot because the CRAC is failing"
 | Cooling Twin | `twins/cooling_twin.py` | `datacenter/twin-state/cooling` |
 | Orchestrator | `orchestrator/orchestrator.py:142` | `datacenter/predictions/CRAC-01`, `datacenter/recommendations/room` |
 
-**Figure 1 — Integrated ecosystem architecture.** The full path from simulated
+**Figure 4 — Integrated ecosystem architecture.** The full path from simulated
 assets through telemetry, sub-twins and twin state to the central orchestrator
 and its two decision outputs, with the coordination-strategy rationale alongside.
 Vector source `docs/ecosystem_diagram.svg`.
 
 ![Integrated ecosystem architecture](ecosystem_diagram.png)
 
-Figure 1 is the reference for every topic name used in this report. Note what it
+Figure 4 is the reference for every topic name used in this report. Note what it
 does not show: there are no arrows between twins, because no twin subscribes to
 another twin's state.
 
@@ -757,7 +775,7 @@ Every row below exists so that a claim in this report is checkable against
 something other than the sentence making it. Running that check across artefacts
 rather than within one found the same defect three times — a statement asserted
 in one place that nothing else in the system supported: arrows between twins on
-an early version of Figure 1, where no twin subscribes to another twin's state;
+an early version of Figure 4, where no twin subscribes to another twin's state;
 a mechanism-accuracy figure on the executive pitch, where the trained artefact
 holds a classifier and a regressor and no mechanism classifier at all
 (`inference/model_loader.py:29`); and a recommendation rationale naming a
